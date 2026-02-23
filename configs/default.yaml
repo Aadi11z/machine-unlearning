@@ -1,0 +1,46 @@
+experiment:
+  name: cifar10_vlm_unlearning
+  seed: 42
+  device: auto
+
+data:
+  data_dir: data
+  split_path: outputs/splits/cifar10_split.json
+  forget_classes: "3,5"
+  forget_fraction: 1.0
+  retain_val_fraction: 0.1
+
+model:
+  model_name: openai/clip-vit-base-patch32
+  prompt_template: "a photo of a {}"
+  adapter_rank: 16
+  adapter_alpha: 16.0
+  train_logit_scale: true
+
+training:
+  output_dir: outputs/finetune
+  batch_size: 128
+  num_workers: 4
+  lr: 0.001
+  weight_decay: 0.0001
+  epochs: 5
+  max_train_steps: -1
+
+unlearning:
+  output_dir: outputs/unlearning
+  methods:
+    - retain_only
+    - ga_kl
+    - counterfactual_rebind
+  steps: 500
+  lr: 0.0005
+  kl_temperature: 1.5
+  kl_weight: 1.0
+  ga_weight: 1.0
+  cf_weight: 1.0
+  margin_weight: 0.5
+  margin: 0.2
+
+attack:
+  output_dir: outputs/comparison
+  max_attack_samples: 4000
