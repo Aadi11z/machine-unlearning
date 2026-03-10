@@ -87,7 +87,7 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
     model = LightweightVLM.from_config(model_cfg).to(device)
 
     # Frozen CLIP backbone in eval mode keeps deterministic behavior.
-    model.clip.eval()
+    model.clip.eval() # Evaluation mode: Disables certain layers like Dropout and Batch Normalization that behave differently during training v/s inference
 
     save_checkpoint(
         str(ckpt_dir / "base_init.pt"),
