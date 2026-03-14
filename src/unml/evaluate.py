@@ -10,20 +10,16 @@ from torch.utils.data import DataLoader
 from .utils import move_to_device, tensor_to_float
 
 
-@torch.no_grad()
-def evaluate_classification(
-    model,
-    loader: DataLoader,
-    class_text_inputs: Dict[str, torch.Tensor],
-    device: torch.device,
-    max_batches: int | None = None,
-) -> Dict[str, float]:
+@torch.no_grad() # needed so that Pytorch doesnt build autograd graphs during execution
+def evaluate_classification(model, loader: DataLoader, class_text_inputs: Dict[str, torch.Tensor], device: torch.device, max_batches: int | None = None) -> Dict[str, float]:
+    # Performs supervised eval
     model.eval()
     total = 0
     correct = 0
     losses = []
     for step, batch in enumerate(loader):
-        if max_batches is not None and step >= max_batches:
+        if max_batches is not None and step >= max_batches: 
+            # if you want early stopping, declare max_batches
             break
         batch = move_to_device(batch, device)
         logits = model.class_logits(
@@ -32,11 +28,11 @@ def evaluate_classification(
             class_attention_mask=class_text_inputs["attention_mask"].to(device),
         )
         labels = batch["labels"]
-        loss = F.cross_entropy(logits, labels)
-        preds = logits.argmax(dim=-1)
-        correct += int((preds == labels).sum().item())
-        total += int(labels.numel())
-        losses.append(tensor_to_float(loss))
+        loss = F.cross_entropy(logits, labels) # Per-Batch loss computation
+        preds = logits.argmax(dim=-1) # gets the indices of the maximum prediction, index of the max value across a row in the tensor, used to get predicted class
+        correct += int((preds == labels).sum().item()) # no. of correctly predicted samples
+        total += int(labels.numel()) # no. of processed samples
+        losses.append(tensor_to_float(loss)) # scalar loss values 
 
     acc = 0.0 if total == 0 else correct / total
     loss_value = float(np.mean(losses)) if losses else 0.0

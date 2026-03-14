@@ -51,6 +51,7 @@ class UnlearnConfig:
 
 
 def _sample_counterfactual(labels: torch.Tensor, num_classes: int, rng: random.Random) -> torch.Tensor:
+    # Createes new label tensor by replacing each true label with a randomly chosen class.
     y_cf = labels.clone()
     for i in range(labels.size(0)):
         y = int(labels[i].item())
@@ -60,6 +61,11 @@ def _sample_counterfactual(labels: torch.Tensor, num_classes: int, rng: random.R
 
 
 def _kl_div(student_logits: torch.Tensor, teacher_logits: torch.Tensor, temperature: float) -> torch.Tensor:
+    # Kullback-Leibler divergence -> measures how one probability distribution diverges from another distribution
+    # kl_div = 0 : identical distribs
+    # kl_div > 0 : different distribs 
+    # Temperature Scaling: controls smoothness of distribs
+    # temp = {1: Normal Softmax, >1: Softer probabilities, ->infinity: Uniform distribution, <1: Sharper probabilities}
     s = F.log_softmax(student_logits / temperature, dim=-1)
     t = F.softmax(teacher_logits / temperature, dim=-1)
     return F.kl_div(s, t, reduction="batchmean") * (temperature**2)
@@ -114,14 +120,16 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
     model = model.to(device)
     model.clip.eval()
 
-    teacher = copy.deepcopy(model).eval().to(device)
+    teacher = copy.deepcopy(model).eval().to(device) # left-to-right chaining, deepcopy doesnt affect original
     for param in teacher.parameters():
         param.requires_grad = False
 
     optimizer = AdamW(model.trainable_parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
 
-    forget_iter = cycle_loader(loaders["forget"])
+    # Infinite iterators to keep yielding batches because retain_train set >> forget 
+    forget_iter = cycle_loader(loaders["forget"]) 
     retain_iter = cycle_loader(loaders["retain_train"])
+    
     rng = random.Random(cfg.seed)
 
     losses = []
@@ -144,12 +152,12 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
                 class_input_ids=class_text_inputs["input_ids"],
                 class_attention_mask=class_text_inputs["attention_mask"],
             )
-
         retain_kl = _kl_div(logits_r, t_logits_r, cfg.kl_temperature)
-
         if cfg.method == "retain_only":
+            # With 'retain' method, only condider loss on the retain batch, this isn't unlearning, just conservative baseline finetuning on data 'to-be-remembered', no explicit forgetting here
             loss = F.cross_entropy(logits_r, batch_r["labels"])
         else:
+            # Forgetting
             batch_f = next(forget_iter)
             batch_f = {k: v.to(device) for k, v in batch_f.items()}
             logits_f = model.class_logits(
@@ -159,19 +167,21 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
             )
 
             if cfg.method == "ga_kl":
-                forget_term = -F.cross_entropy(logits_f, batch_f["labels"])
-                loss = cfg.ga_weight * forget_term + cfg.kl_weight * retain_kl
+                # Gradient Ascent (GA) with KL divergence:
+                # GA to maximize loss on the forget data while using KL div to make sure the model doesnt stray from the teacher
+                forget_term = -F.cross_entropy(logits_f, batch_f["labels"]) # negation reverses the minimization and model is encouraged to become worse at predicting 
+                loss = cfg.ga_weight * forget_term + cfg.kl_weight * retain_kl # add retain tensor to ensure retained behaviour close to teacher
 
             elif cfg.method == "counterfactual_rebind":
                 y_true = batch_f["labels"]
                 y_cf = _sample_counterfactual(y_true, len(CIFAR10_CLASSES), rng).to(device)
-                rebind_loss = F.cross_entropy(logits_f, y_cf)
-                true_logits = logits_f.gather(1, y_true.unsqueeze(1)).squeeze(1)
-                cf_logits = logits_f.gather(1, y_cf.unsqueeze(1)).squeeze(1)
-                margin_loss = F.relu(true_logits - cf_logits + cfg.margin).mean()
+                rebind_loss = F.cross_entropy(logits_f, y_cf) # Redirect to counterfactual
+                true_logits = logits_f.gather(1, y_true.unsqueeze(1)).squeeze(1) # score of the true class 
+                cf_logits = logits_f.gather(1, y_cf.unsqueeze(1)).squeeze(1) # score of the counterfactual class
+                margin_loss = F.relu(true_logits - cf_logits + cfg.margin).mean() # penalizes the model when true score > counterfactual score
 
                 loss = (
-                    cfg.cf_weight * rebind_loss
+                    cfg.cf_weight * rebind_loss 
                     + cfg.margin_weight * margin_loss
                     + cfg.kl_weight * retain_kl
                 )
