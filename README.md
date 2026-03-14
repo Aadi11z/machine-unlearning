@@ -6,9 +6,6 @@ End-to-end project for machine unlearning on a lightweight vision-language model
 3. Unlearn using multiple methods.
 4. Run membership-inference attacks and compare model utility and forget quality.
 
-Detailed execution and troubleshooting guide:
-- `RUNBOOK.md`
-
 ## Why this is novel
 This project includes a new unlearning objective:
 - `counterfactual_rebind`: for forget samples, the model is pushed toward counterfactual class prompts while preserving retain behavior through KL-to-teacher regularization.
