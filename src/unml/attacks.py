@@ -44,9 +44,17 @@ def _safe_auc(y_true: np.ndarray, scores: np.ndarray) -> float:
     if unique.size < 2:
         return 0.5
     return float(roc_auc_score(y_true, scores))
+    # AUC = 0.5: no separability (random guessing).
+    # AUC > 0.5: attacker can distinguish members from non-members.
+    # AUC = 1.0: perfect separation.
+    # AUC < 0.5: reversed direction (if attacker flips the decision rule, it effectively becomes > 0.5).
+    # AUC is the probability that a random member gets a higher score than a random non-member.
 
 
 def _mia_metrics(member_current: np.ndarray, nonmember_current: np.ndarray, member_base: np.ndarray, nonmember_base: np.ndarray) -> Dict[str, float]:
+    # Membership Inference Attack checks, given a sample and model's output score, whether that sample was in the model's training set(member) or not(non-member)
+    # It is a privacy leak, If members have higher confidence than non-members
+    # Basically answers, "Can confidence-based attacks tell which sample was in training?"
     member_current, nonmember_current = _truncate_equal(member_current, nonmember_current)
     member_base, nonmember_base = _truncate_equal(member_base, nonmember_base)
 
@@ -54,12 +62,14 @@ def _mia_metrics(member_current: np.ndarray, nonmember_current: np.ndarray, memb
     conf_scores = np.concatenate([member_current, nonmember_current])
     delta_scores = np.concatenate([member_current - member_base, nonmember_current - nonmember_base])
 
-    auc_conf = _safe_auc(y, conf_scores)
-    auc_delta = _safe_auc(y, delta_scores)
+    auc_conf = _safe_auc(y, conf_scores) # checks if raw true-class confidence leaks membership info
+    auc_delta = _safe_auc(y, delta_scores) # checks if change relative to base model leaks membership
 
     mia_resistance_conf = max(0.0, 1.0 - abs(auc_conf - 0.5) * 2)
     mia_resistance_delta = max(0.0, 1.0 - abs(auc_delta - 0.5) * 2)
-
+    # If AUC = 0.5 -> resistance = 1.0 (best privacy)
+    # if AUC = 0 or 1 -> resistance = 0.0 (worst privacy)
+    
     return {
         "mia_auc_confidence": auc_conf,
         "mia_auc_delta": auc_delta,

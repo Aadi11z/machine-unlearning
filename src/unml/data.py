@@ -186,6 +186,7 @@ def build_loaders(data_dir: str, split_path: str, image_processor: CLIPImageProc
     collate_fn = make_collate_fn(image_processor)
 
     def _loader(dataset: Dataset, shuffle: bool, drop_last: bool = False) -> DataLoader:
+        # returns the dict by CLIPCollator
         return DataLoader(
             dataset,
             batch_size=batch_size,
