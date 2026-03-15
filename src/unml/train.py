@@ -15,6 +15,7 @@ from transformers import CLIPImageProcessor, CLIPTokenizer
 from .data import CIFAR10_CLASSES, build_loaders, build_text_inputs
 from .evaluate import evaluate_classification
 from .model import ModelConfig, LightweightVLM, save_checkpoint
+from .tracker import log_finetune_epoch, log_finetune_summary
 from .utils import format_metrics, get_device, save_json, set_seed, tensor_to_float
 
 
@@ -146,6 +147,8 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
         full_metrics = {"epoch": float(epoch + 1), "train_loss": epoch_loss, **eval_metrics}
         print(f"[finetune] {format_metrics(full_metrics)}", flush=True)
 
+        log_finetune_epoch(cfg.__dict__, epoch + 1, epoch_loss, eval_metrics)
+
         if eval_metrics["retain_val_acc"] > best_metric:
             best_metric = eval_metrics["retain_val_acc"]
             save_checkpoint(
@@ -175,6 +178,8 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
         },
         metrics_path,
     )
+
+    log_finetune_summary(cfg.__dict__, best_metric, cfg.epochs)
 
     return {
         "base_checkpoint": str(ckpt_dir / "base_init.pt"),

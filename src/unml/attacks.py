@@ -15,6 +15,7 @@ from transformers import CLIPImageProcessor, CLIPTokenizer
 from .data import CIFAR10_CLASSES, build_loaders, build_text_inputs
 from .evaluate import collect_true_class_confidences, evaluate_classification
 from .model import load_checkpoint
+from .tracker import update_unlearn_with_attacks
 from .utils import get_device
 
 
@@ -186,6 +187,7 @@ def run_attack_comparison(cfg: AttackConfig) -> Dict[str, str]:
             max_attack_samples=cfg.max_attack_samples,
         )
         records.append({"model": name, "checkpoint": ckpt_path, **metrics, "meta": str(meta)})
+        update_unlearn_with_attacks(name, metrics)
 
     df = pd.DataFrame(records).sort_values(by=["forget_quality", "utility_test_retain"], ascending=False)
 

@@ -123,3 +123,20 @@ Forgetting quality combines:
 - Backbone: `openai/clip-vit-base-patch32` (frozen).
 - Trainable params: low-rank adapters on image/text embeddings + optional logit scale.
 - This makes training lightweight and unlearning iterations fast.
+
+# Novel Directions To Explore (this is needs research)
+
+- Hard counterfactual rebind (novel extension): Instead of random y_cf, choose semantically closest competing class by embedding similarity.
+> Hypothesis: more realistic confusion yields stronger and cleaner forgetting.
+- Curriculum counterfactual rebind: Start with easy counterfactual classes, then gradually harder ones.
+> Hypothesis: improves stability and utility retention.
+- Uncertainty-aware rebind: Weight forget samples by confidence or margin. Focus updates on high-memorization points.
+- Prototype-anchored rebind: Add class prototype alignment so forget samples move toward chosen counterfactual prototype.
+- Distribution-preserving rebind: Regularize to preserve retain feature geometry while altering forget regions.
+
+- Disentanglement-Based Unlearning
+1. Split representation into shared and forget-sensitive components.
+2. Train adversary to predict forget attribute from shared part.
+3. Train encoder to remove forget signal from shared part (gradient reversal/adversarial objective).
+4. Use retain supervision + utility constraints so task performance remains.
+5. At unlearning time, damp or reset forget-sensitive branch and rebind through shared branch.

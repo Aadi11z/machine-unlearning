@@ -16,6 +16,7 @@ from transformers import CLIPImageProcessor, CLIPTokenizer
 from .data import CIFAR10_CLASSES, build_loaders, build_text_inputs, cycle_loader
 from .evaluate import evaluate_classification
 from .model import load_checkpoint, save_checkpoint
+from .tracker import log_unlearn_run
 from .utils import format_metrics, get_device, save_json, set_seed, tensor_to_float
 
 
@@ -227,6 +228,8 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
         },
         metrics_path,
     )
+
+    log_unlearn_run(cfg.__dict__, summary_metrics)
 
     return {
         "checkpoint": str(ckpt_path),
