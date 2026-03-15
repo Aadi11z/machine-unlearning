@@ -78,7 +78,7 @@ def log_finetune_epoch(cfg_dict: Dict[str, Any], epoch: int, train_loss: float, 
     _ensure_header(path, "Finetuning Experiment Tracker", _FT_COLUMNS)
 
     values = [
-        datetime.now().strftime("%Y-%m-%d %H:%M")(),
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
         str(epoch),
         str(cfg_dict.get("adapter_rank", "")),
         _fmt(cfg_dict.get("adapter_alpha", "")),
@@ -105,7 +105,7 @@ def log_finetune_summary(cfg_dict: Dict[str, Any], best_retain_val_acc: float, t
         f.write(
             f"\n> **Run complete** | best_retain_val_acc={best_retain_val_acc:.4f} | "
             f"epochs={total_epochs} | rank={cfg_dict.get('adapter_rank')} | "
-            f"lr={cfg_dict.get('lr')} | {datetime.now().strftime("%Y-%m-%d %H:%M")()}\n\n"
+            f"lr={cfg_dict.get('lr')} | {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
         )
 
 
@@ -143,7 +143,7 @@ def log_unlearn_run(cfg_dict: Dict[str, Any], metrics: Dict[str, float]) -> None
     _ensure_header(path, "Unlearning & Evaluation Experiment Tracker", _UL_COLUMNS)
 
     values = [
-        datetime.now().strftime("%Y-%m-%d %H:%M")(),
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
         str(cfg_dict.get("method", "")),
         str(cfg_dict.get("steps", "")),
         _fmt(cfg_dict.get("lr", "")),
