@@ -3,7 +3,7 @@ import json
 import os
 import random
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Mapping
 import numpy as np
 import torch
 
@@ -44,7 +44,7 @@ def tensor_to_float(value: torch.Tensor | float) -> float:
         return float(value.detach().cpu().item())
     return float(value)
 
-def format_metrics(metrics: Dict[str, float], precision: int = 4) -> str:
+def format_metrics(metrics: Mapping[str, float], precision: int = 4) -> str:
     parts = [f"{k}={v:.{precision}f}" for k, v in sorted(metrics.items())]
     return ", ".join(parts)
 

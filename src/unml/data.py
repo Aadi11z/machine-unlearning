@@ -2,7 +2,7 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, Iterable, List, Sequence
+from typing import TYPE_CHECKING, Dict, Iterable, List, Sequence, Mapping
 import torch
 from torch.utils.data import DataLoader, Dataset
 from torchvision.datasets import CIFAR10
@@ -221,7 +221,7 @@ def infer_forget_classes(split_path: str) -> List[int]:
     split = load_json(split_path)
     return list(split["forget_classes"])
 
-def summarize_splits(split_path: str) -> Dict[str, int]:
+def summarize_splits(split_path: str) -> Mapping[str, int]:
     split = load_json(split_path)
     return {
         "forget_count": len(split["forget_indices"]),

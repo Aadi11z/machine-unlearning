@@ -20,7 +20,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Download CIFAR-10 and create unlearning splits")
     parser.add_argument("--data-dir", type=str, default="data")
     parser.add_argument("--split-path", type=str, default="outputs/splits/cifar10_split.json")
-    parser.add_argument("--forget-classes", type=str, default="3,5", help="Comma-separated class ids to forget")
+    parser.add_argument("--forget-classes", type=str, default="3,5", help="Comma-separated class ids to forget (e.g. 1,2)")
     parser.add_argument("--forget-fraction", type=float, default=1.0)
     parser.add_argument("--retain-val-fraction", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
