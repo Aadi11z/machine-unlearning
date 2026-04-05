@@ -150,11 +150,24 @@ class LightweightVLM(nn.Module):
             params.append(self.logit_scale)
         return params
 
+def _adapter_state_dict(model: LightweightVLM) -> Dict[str, torch.Tensor]:
+    """Extract only the trainable adapter + logit_scale weights (not the frozen CLIP backbone).
+
+    This reduces checkpoint size from ~577 MB to ~100 KB.
+    """
+    keys = {}
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            keys[name] = param.data.clone()
+    # Always save logit_scale so we can restore it even if it was frozen
+    keys["logit_scale"] = model.logit_scale.data.clone()
+    return keys
+
 
 def save_checkpoint(path: str, model: LightweightVLM, extra: Dict | None = None) -> None:
     payload = {
         "model_config": asdict(model.cfg),
-        "state_dict": model.state_dict(),
+        "adapter_state_dict": _adapter_state_dict(model),
     }
     if extra:
         payload["extra"] = extra
@@ -166,6 +179,12 @@ def load_checkpoint(path: str, map_location: str | torch.device = "cpu") -> Tupl
     payload = torch.load(path, map_location=map_location)
     cfg = ModelConfig(**payload["model_config"])
     model = LightweightVLM.from_config(cfg)
-    model.load_state_dict(payload["state_dict"])
+
+    # Support both old full-model checkpoints and new adapter-only checkpoints
+    if "adapter_state_dict" in payload:
+        model.load_state_dict(payload["adapter_state_dict"], strict=False)
+    else:
+        model.load_state_dict(payload["state_dict"])
+
     extra = payload.get("extra", {})
     return model, extra

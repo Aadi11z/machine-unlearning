@@ -1,10 +1,6 @@
-"""Utility package for lightweight VLM unlearning experiments."""
-
 from __future__ import annotations
-
 import os
 
-# Avoid importing heavy/unstable optional backends in lightweight setups.
 os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
 os.environ.setdefault("TRANSFORMERS_NO_FLAX", "1")
 os.environ.setdefault("USE_TF", "0")
@@ -18,4 +14,5 @@ __all__ = [
     "model",
     "train",
     "unlearn",
+    "utils"
 ]

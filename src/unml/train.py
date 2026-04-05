@@ -167,12 +167,12 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
         extra={"stage": "finetuned_last", "best_retain_val_acc": best_metric},
     )
 
-    best_model_metrics = _evaluate_all(model, loaders, class_text_inputs, device)
+    final_model_metrics = _evaluate_all(model, loaders, class_text_inputs, device)
     metrics_path = metrics_dir / "finetune_metrics.json"
     save_json(
         {
             "best_retain_val_acc": best_metric,
-            "final_metrics": best_model_metrics,
+            "final_metrics": final_model_metrics,
             "global_steps": global_step,
             "class_names": CIFAR10_CLASSES,
         },

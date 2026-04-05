@@ -110,16 +110,10 @@ def _sample_indices(indices: List[int], fraction: float, rng: random.Random) -> 
 
 def make_splits(train_labels: Sequence[int], test_labels: Sequence[int], cfg: SplitConfig,) -> Dict[str, List[int]]:
     rng = random.Random(cfg.seed)
-    # print(f"Rng: {rng}")    
     forget_pool = [i for i, y in enumerate(train_labels) if y in cfg.forget_classes] # all indices whose labels belong to the forget labels
-    # print(f"Forget Pool value: {forget_pool}")
     forget_indices = sorted(_sample_indices(forget_pool, cfg.forget_fraction, rng))
-    # print(f"Forget indices value: {forget_indices}")
-    forget_set = set(forget_indices)
-    # print(f"Forget Set: {forget_set}")
-    
+    forget_set = set(forget_indices)    
     retain_all = [i for i in range(len(train_labels)) if i not in forget_set] # all indices whose labels belong to the retain set (!forget_set) 
-    # print(f"Retain all values: {retain_all}")
     retain_val_size = max(1, int(len(retain_all) * cfg.retain_val_fraction))
     retain_val_indices = sorted(rng.sample(retain_all, retain_val_size))
     retain_val_set = set(retain_val_indices)
@@ -216,10 +210,6 @@ def build_loaders(data_dir: str, split_path: str, image_processor: CLIPImageProc
         "test_retain": _loader(subsets["test_retain"], shuffle=False),
         "test_all": _loader(subsets["test_all"], shuffle=False),
     }
-
-def infer_forget_classes(split_path: str) -> List[int]:
-    split = load_json(split_path)
-    return list(split["forget_classes"])
 
 def summarize_splits(split_path: str) -> Mapping[str, int]:
     split = load_json(split_path)

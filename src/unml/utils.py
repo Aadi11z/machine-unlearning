@@ -16,7 +16,7 @@ def set_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 def ensure_dir(path: str | Path) -> None:
-    Path(path).mkdir(parents=True, exist_ok=True) # ensure the path given exists
+    Path(path).mkdir(parents=True, exist_ok=True)
 
 def save_json(payload: Dict[str, Any], path: str | Path) -> None:
     ensure_dir(Path(path).parent)
@@ -48,11 +48,3 @@ def format_metrics(metrics: Mapping[str, float], precision: int = 4) -> str:
     parts = [f"{k}={v:.{precision}f}" for k, v in sorted(metrics.items())]
     return ", ".join(parts)
 
-def get_env_int(name: str, default: int) -> int:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        return default

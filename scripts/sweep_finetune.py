@@ -132,8 +132,8 @@ def main() -> None:
         else:
             print(f"  {j}. {r['run_name']} => {acc:.4f}")
 
-    best = results[0]
-    if best.get("best_retain_val_acc", -1) > 0:
+    if results and results[0].get("best_retain_val_acc", -1) > 0:
+        best = results[0]
         print(f"\n[sweep] Best config: {best['run_name']}")
         print(f"[sweep] Best checkpoint: {best.get('best_checkpoint')}")
         print(f"[sweep] retain_val_acc: {best['best_retain_val_acc']:.4f}")
@@ -143,3 +143,21 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# usage
+# cleanup_checkpoints.py — standalone cleanup tool with these rules:
+#   - base_init.pt is always targeted (it's identical across all runs/methods)
+#   - finetuned_last.pt is only targeted when you pass --include-last              
+#   - finetuned_best.pt is never deleted       
+#   - --run-name lets you scope --include-last to a specific config
+#   - --include-oversized flags old 577 MB checkpoints that still have the frozen backbone                       
+#   - Default is dry-run preview; --delete actually removes files                                                                         
+#   # Preview what's redundant                                               
+#   python scripts/cleanup_checkpoints.py                                                                    
+#   # Delete all base_init.pt files                             
+#   python scripts/cleanup_checkpoints.py --delete                                                 
+#   # Delete last checkpoint for one specific run only                                                     
+#   python scripts/cleanup_checkpoints.py --delete --include-last --run-name r8_a8.0_lr0.001_wd0.0001_s42                                             
+#   # Nuclear option: also clean old oversized checkpoints                             
+#   python scripts/cleanup_checkpoints.py --delete --include-oversized 

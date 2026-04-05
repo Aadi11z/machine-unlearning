@@ -147,17 +147,17 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
             class_input_ids=class_text_inputs["input_ids"],
             class_attention_mask=class_text_inputs["attention_mask"],
         )
-        with torch.no_grad():
-            t_logits_r = teacher.class_logits(
-                pixel_values=batch_r["pixel_values"],
-                class_input_ids=class_text_inputs["input_ids"],
-                class_attention_mask=class_text_inputs["attention_mask"],
-            )
-        retain_kl = _kl_div(logits_r, t_logits_r, cfg.kl_temperature)
         if cfg.method == "retain_only":
             # With 'retain' method, only condider loss on the retain batch, this isn't unlearning, just conservative baseline finetuning on data 'to-be-remembered', no explicit forgetting here
             loss = F.cross_entropy(logits_r, batch_r["labels"])
         else:
+            with torch.no_grad():
+                t_logits_r = teacher.class_logits(
+                    pixel_values=batch_r["pixel_values"],
+                    class_input_ids=class_text_inputs["input_ids"],
+                    class_attention_mask=class_text_inputs["attention_mask"],
+                )
+            retain_kl = _kl_div(logits_r, t_logits_r, cfg.kl_temperature)
             # Forgetting
             batch_f = next(forget_iter)
             batch_f = {k: v.to(device) for k, v in batch_f.items()}

@@ -136,6 +136,9 @@ _UL_COLUMNS = [
     "forget_drop",
 ]
 
+# parts[0] is empty (before the first "|"), so column k maps to parts[k+1]
+_UL_PARTS_IDX: Dict[str, int] = {col: i + 1 for i, col in enumerate(_UL_COLUMNS)}
+
 
 def log_unlearn_run(cfg_dict: Dict[str, Any], metrics: Dict[str, float]) -> None:
     root = _project_root()
@@ -175,7 +178,7 @@ def update_unlearn_with_attacks(method: str, attack_metrics: Dict[str, float]) -
     and fills in the attack columns if they were empty.
     """
     root = _project_root()
-    path = root / "UNLEARN_EVAL_TRACKER.md"
+    path = root / "c.md"
     if not path.exists():
         return
 
@@ -185,13 +188,12 @@ def update_unlearn_with_attacks(method: str, attack_metrics: Dict[str, float]) -
         parts = [c.strip() for c in lines[i].split("|")]
         # parts[0] is empty (before first |), parts[1]=timestamp, parts[2]=method
         if len(parts) > 2 and parts[2] == method:
-            # Update forget_quality, mia_auc_conf, mia_auc_delta, forget_drop
-            # These are the last 4 columns (indices 17, 18, 19, 20 in parts)
-            if len(parts) >= 21:
-                parts[17] = _fmt(attack_metrics.get("forget_quality", 0.0))
-                parts[18] = _fmt(attack_metrics.get("mia_auc_confidence", 0.0))
-                parts[19] = _fmt(attack_metrics.get("mia_auc_delta", 0.0))
-                parts[20] = _fmt(attack_metrics.get("forget_drop", 0.0))
+            # Update attack columns — indices derived from _UL_COLUMNS to stay in sync
+            if len(parts) >= len(_UL_COLUMNS) + 2:
+                parts[_UL_PARTS_IDX["forget_quality"]] = _fmt(attack_metrics.get("forget_quality", 0.0))
+                parts[_UL_PARTS_IDX["mia_auc_conf"]] = _fmt(attack_metrics.get("mia_auc_confidence", 0.0))
+                parts[_UL_PARTS_IDX["mia_auc_delta"]] = _fmt(attack_metrics.get("mia_auc_delta", 0.0))
+                parts[_UL_PARTS_IDX["forget_drop"]] = _fmt(attack_metrics.get("forget_drop", 0.0))
                 lines[i] = " | ".join(parts)
             break
 
