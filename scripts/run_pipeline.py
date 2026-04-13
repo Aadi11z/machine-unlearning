@@ -22,7 +22,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--ft-epochs", type=int, default=5)
+    parser.add_argument("--ft-epochs", type=int, default=10)
     parser.add_argument("--ft-max-steps", type=int, default=-1)
     parser.add_argument("--ul-steps", type=int, default=500)
     parser.add_argument("--methods", type=str, default="retain_only,ga_kl,counterfactual_rebind")
@@ -34,13 +34,13 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    repo_root = Path(__file__).resolve().parents[1] # `resolve` converts it to absolute path, and parents[1] goes 2 levels up
-    env = os.environ.copy() # copies current shell environment variables
-    env.setdefault("TRANSFORMERS_NO_TF", "1") # Tell HuggingFace Transformers, not to use TensorFlow and Flax to prevent slow imports, dependency confilcts, 
-    env.setdefault("TRANSFORMERS_NO_FLAX", "1") # and CUDA issues
+    repo_root = Path(__file__).resolve().parents[1] 
+    env = os.environ.copy() 
+    env.setdefault("TRANSFORMERS_NO_TF", "1")
+    env.setdefault("TRANSFORMERS_NO_FLAX", "1")
     env.setdefault("USE_TF", "0")
     env.setdefault("USE_FLAX", "0")
-    env.setdefault("TOKENIZERS_PARALLELISM", "false") # Prevents HuggingFace Transformers from spawning many threads, and to avoid deadlock situations
+    env.setdefault("TOKENIZERS_PARALLELISM", "false")
     env.setdefault("PYTHONUNBUFFERED", "1") # for logs to appear immediately
     src_path = str(repo_root / "src")
     env["PYTHONPATH"] = src_path + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")

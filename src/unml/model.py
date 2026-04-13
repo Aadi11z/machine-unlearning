@@ -151,10 +151,7 @@ class LightweightVLM(nn.Module):
         return params
 
 def _adapter_state_dict(model: LightweightVLM) -> Dict[str, torch.Tensor]:
-    """Extract only the trainable adapter + logit_scale weights (not the frozen CLIP backbone).
-
-    This reduces checkpoint size from ~577 MB to ~100 KB.
-    """
+    # Extract only the trainable adapter + logit_scale weights layer (not the frozen CLIP backbone). This reduces the checkpoint size to KBs from MBs
     keys = {}
     for name, param in model.named_parameters():
         if param.requires_grad:
@@ -165,6 +162,7 @@ def _adapter_state_dict(model: LightweightVLM) -> Dict[str, torch.Tensor]:
 
 
 def save_checkpoint(path: str, model: LightweightVLM, extra: Dict | None = None) -> None:
+    # From model.state_dict() to _adapter_state_dict() 
     payload = {
         "model_config": asdict(model.cfg),
         "adapter_state_dict": _adapter_state_dict(model),

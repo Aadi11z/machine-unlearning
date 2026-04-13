@@ -26,8 +26,8 @@ class FineTuneConfig:
     output_dir: str
     model_name: str = "openai/clip-vit-base-patch32"
     prompt_template: str = "a photo of a {}"
-    adapter_rank: int = 16
-    adapter_alpha: float = 16.0
+    adapter_rank: int = 8
+    adapter_alpha: float = 8.0
     train_logit_scale: bool = True
     batch_size: int = 128
     num_workers: int = 4
@@ -167,12 +167,12 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
         extra={"stage": "finetuned_last", "best_retain_val_acc": best_metric},
     )
 
-    final_model_metrics = _evaluate_all(model, loaders, class_text_inputs, device)
+    best_model_metrics = _evaluate_all(model, loaders, class_text_inputs, device)
     metrics_path = metrics_dir / "finetune_metrics.json"
     save_json(
         {
             "best_retain_val_acc": best_metric,
-            "final_metrics": final_model_metrics,
+            "final_metrics": best_model_metrics,
             "global_steps": global_step,
             "class_names": CIFAR10_CLASSES,
         },

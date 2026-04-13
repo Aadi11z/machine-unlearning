@@ -23,13 +23,14 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--model-name", type=str, default="openai/clip-vit-base-patch32")
     parser.add_argument("--prompt-template", type=str, default="a photo of a {}")
-    parser.add_argument("--adapter-rank", type=int, default=16)
-    parser.add_argument("--adapter-alpha", type=float, default=16.0)
-    parser.add_argument("--no-train-logit-scale", action="store_true")
+    parser.add_argument("--adapter-rank", type=int, default=8)
+    parser.add_argument("--adapter-alpha", type=float, default=8.0)
+    parser.add_argument("--no-train-logit-scale", action="store_true") # when this is called from run_pipeline.py, it isnt mentioned there, which causes its flag to be set as False, thats why we 'not' it below when setting the config. 
+    # logit_scale is CLIP's learned temperature parameter (which is a sclar that controls how sharp the similarity distribution is b/w img and embedding. It acts as a softmax over class logits. In CLIP, the value is ~ln(100)=4.6. We train the logit_scale for both finetuning and unlearning. This essentially means that we give the model one more degree of freedom to adjust classification confidence. Freezing it would keep the output closer to CLIP behaviour. Im not sure if 'not freezing it' is the right call for the unlearning, because if one method shifts the logit_scale more than another, comparision becomes messy. This will have to be verified by freezing it during unlearning and see if MIA or forget quality change. If they dont, then the system is fine, but if they do then it becomes a temperature drift parameter to account for in adapter unlearning. The delta-based MIA is computed by (confidence_after_unlearning - confidence_base). If the logit_scale shifts during unlearning, the delta change reflects both unlearning and temperature change, which makes it harder to interpret which is genuine forgetting v/s the model changing its confidence due to temperature drift (temp drift as a confound in MIA eval for adapter-based unlearning).
 
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--lr", type=float, default=3e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--max-train-steps", type=int, default=-1)
