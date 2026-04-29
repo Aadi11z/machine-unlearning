@@ -24,6 +24,7 @@ UNLEARNING_METHODS = {
     "retain_only",
     "ga_kl",
     "counterfactual_rebind",
+    "entropy_rebind",
 }
 
 
@@ -49,6 +50,7 @@ class UnlearnConfig:
     cf_weight: float = 1.0
     margin_weight: float = 0.5
     margin: float = 0.2
+    entropy_weight: float = 1.0
 
 
 def _sample_counterfactual(labels: torch.Tensor, num_classes: int, rng: random.Random) -> torch.Tensor:
@@ -174,18 +176,37 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
                 loss = cfg.ga_weight * forget_term + cfg.kl_weight * retain_kl # add retain tensor to ensure retained behaviour close to teacher
 
             elif cfg.method == "counterfactual_rebind":
+                # Redirects forget predictions to a randomly chosen wrong class (y_cf),
+                # then enforces a margin so cf score > true score.
+                # WEAKNESS: both rebind_loss and margin_loss saturate at high step counts —
+                # once the model confidently predicts y_cf, gradients from these terms
+                # shrink to ~0 and only retain_kl remains, making it behave like ga_kl.
                 y_true = batch_f["labels"]
                 y_cf = _sample_counterfactual(y_true, len(CIFAR10_CLASSES), rng).to(device)
                 rebind_loss = F.cross_entropy(logits_f, y_cf) # Redirect to counterfactual
-                true_logits = logits_f.gather(1, y_true.unsqueeze(1)).squeeze(1) # score of the true class 
+                true_logits = logits_f.gather(1, y_true.unsqueeze(1)).squeeze(1) # score of the true class
                 cf_logits = logits_f.gather(1, y_cf.unsqueeze(1)).squeeze(1) # score of the counterfactual class
                 margin_loss = F.relu(true_logits - cf_logits + cfg.margin).mean() # penalizes the model when true score > counterfactual score
 
                 loss = (
-                    cfg.cf_weight * rebind_loss 
+                    cfg.cf_weight * rebind_loss
                     + cfg.margin_weight * margin_loss
                     + cfg.kl_weight * retain_kl
                 )
+
+            elif cfg.method == "entropy_rebind":
+                # Instead of pushing toward a single counterfactual class, maximizes entropy
+                # over ALL classes on forget data — the model becomes maximally uncertain.
+                # KEY DIFFERENCE from counterfactual_rebind: entropy never saturates.
+                # No matter how many steps, there is always gradient pulling each class logit
+                # toward equal probability (1/C). The model can never be "done" forgetting.
+                # No margin loss needed: entropy maximization inherently suppresses the true
+                # class logit as part of flattening the whole distribution.
+                log_probs_f = F.log_softmax(logits_f, dim=-1)
+                probs_f = log_probs_f.exp()
+                entropy = -(probs_f * log_probs_f).sum(dim=-1).mean()  # H(p), higher = more uncertain
+                loss = -cfg.entropy_weight * entropy + cfg.kl_weight * retain_kl  # negate to maximise
+
             else:
                 raise RuntimeError(f"Unreachable method: {cfg.method}")
 

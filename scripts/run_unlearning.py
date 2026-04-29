@@ -14,7 +14,7 @@ os.environ.setdefault("USE_TF", "0")
 os.environ.setdefault("USE_FLAX", "0")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-UNLEARNING_METHODS = ("retain_only", "ga_kl", "counterfactual_rebind")
+UNLEARNING_METHODS = ("retain_only", "ga_kl", "counterfactual_rebind", "entropy_rebind")
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,6 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cf-weight", type=float, default=1.0)
     parser.add_argument("--margin-weight", type=float, default=0.5)
     parser.add_argument("--margin", type=float, default=0.2)
+    parser.add_argument("--entropy-weight", type=float, default=1.0)
 
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="auto")
@@ -78,6 +79,7 @@ def main() -> None:
         cf_weight=args.cf_weight,
         margin_weight=args.margin_weight,
         margin=args.margin,
+        entropy_weight=args.entropy_weight,
     )
     result = run_unlearning(cfg)
     print(result)
