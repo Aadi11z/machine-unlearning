@@ -160,13 +160,6 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
         if cfg.max_train_steps > 0 and global_step >= cfg.max_train_steps:
             break
 
-    final_path = ckpt_dir / "finetuned_last.pt"
-    save_checkpoint(
-        str(final_path),
-        model,
-        extra={"stage": "finetuned_last", "best_retain_val_acc": best_metric},
-    )
-
     best_model_metrics = _evaluate_all(model, loaders, class_text_inputs, device)
     metrics_path = metrics_dir / "finetune_metrics.json"
     save_json(
@@ -184,7 +177,6 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
     return {
         "base_checkpoint": str(ckpt_dir / "base_init.pt"),
         "best_checkpoint": str(best_path),
-        "final_checkpoint": str(final_path),
         "metrics_path": str(metrics_path),
         "best_retain_val_acc": best_metric,
     }
