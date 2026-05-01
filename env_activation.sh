@@ -25,7 +25,7 @@ export HF_HOME="$SCRATCH_PROJECT/huggingface_cache"
 # Set Dataset path, Outputs path, and Splits Location
 export UNML_DATA="$SCRATCH_PROJECT/data"
 export UNML_OUTPUTS="$SCRATCH_PROJECT/outputs"
-export UNML_SPLIT="$SCRATCH_PROJECT/outputs/splits"
+export UNML_SPLIT="$SCRATCH_PROJECT/outputs/splits/cifar10_split.json"
 export UNML_BEST_CKPT="$SCRATCH_PROJECT/outputs/finetune/checkpoints/finetuned_best.pt"
 
 echo "✓ venv Activated: $SCRATCH_PROJECT/unml-env"
