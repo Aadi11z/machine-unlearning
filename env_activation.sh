@@ -22,9 +22,11 @@ export HF_HOME="$SCRATCH_PROJECT/huggingface_cache"
 # mkdir -p "$SCRATCH_PROJECT/data"
 # mkdir -p "$SCRATCH_PROJECT/outputs"
 
-# Set Dataset path, Outputs path
+# Set Dataset path, Outputs path, and Splits Location
 export UNML_DATA="$SCRATCH_PROJECT/data"
 export UNML_OUTPUTS="$SCRATCH_PROJECT/outputs"
+export UNML_SPLIT="$SCRATCH_PROJECT/outputs/splits"
+export UNML_BEST_CKPT="$SCRATCH_PROJECT/outputs/finetune/checkpoints/finetuned_best.pt"
 
 echo "✓ venv Activated: $SCRATCH_PROJECT/unml-env"
 echo "✓ PIP_CACHE_DIR: $PIP_CACHE_DIR"
@@ -33,3 +35,5 @@ echo ""
 echo "Convenience vars:"
 echo "  UNML_DATA = $UNML_DATA"
 echo "  UNML_OUTPUTS = $UNML_OUTPUTS"
+echo "  UNML_SPLIT = $UNML_SPLIT"
+echo "  UNML_BEST_CKPT = $UNML_BEST_CKPT"
