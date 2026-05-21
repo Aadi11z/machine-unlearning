@@ -9,6 +9,7 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 __all__ = [
     "attacks",
+    "config",
     "data",
     "evaluate",
     "model",

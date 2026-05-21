@@ -6,65 +6,153 @@ import subprocess
 import sys
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+for path in (REPO_ROOT, REPO_ROOT / "src"):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
+
+from unml.config import load_runtime_config, resolve_str_list, resolve_value
+
+
 def run_cmd(cmd: list[str], env: dict[str, str]) -> None:
     print("[cmd]", " ".join(cmd))
     subprocess.run(cmd, check=True, env=env)
 
+
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run full lightweight VLM unlearning pipeline")
+    parser = argparse.ArgumentParser(
+        description="Run full lightweight VLM unlearning pipeline"
+    )
 
-    parser.add_argument("--data-dir", type=str, default="data")
-    parser.add_argument("--split-path", type=str, default="outputs/splits/cifar10_split.json")
-    parser.add_argument("--model-name", type=str, default="openai/clip-vit-base-patch32")
-    parser.add_argument("--output-root", type=str, default="outputs")
-    parser.add_argument("--forget-classes", type=str, default="3,5")
-    parser.add_argument("--forget-fraction", type=float, default=1.0)
+    parser.add_argument(
+        "--config", type=str, default=str(REPO_ROOT / "config" / "parameters.yaml")
+    )
+    parser.add_argument("--data-dir", type=str, default=None)
+    parser.add_argument("--split-path", type=str, default=None)
+    parser.add_argument("--model-name", type=str, default=None)
+    parser.add_argument("--output-root", type=str, default=None)
+    parser.add_argument("--forget-classes", type=str, default=None)
+    parser.add_argument("--forget-fraction", type=float, default=None)
 
-    parser.add_argument("--batch-size", type=int, default=128)
-    parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--ft-epochs", type=int, default=10)
-    parser.add_argument("--ft-max-steps", type=int, default=-1)
-    parser.add_argument("--ul-steps", type=int, default=500)
-    parser.add_argument("--methods", type=str, default="retain_only,ga_kl,counterfactual_rebind")
+    parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument("--num-workers", type=int, default=None)
+    parser.add_argument("--ft-epochs", type=int, default=None)
+    parser.add_argument("--ft-max-steps", type=int, default=None)
+    parser.add_argument("--ul-steps", type=int, default=None)
+    parser.add_argument("--methods", type=str, default=None)
 
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--device", type=str, default="auto")
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--device", type=str, default=None)
     return parser.parse_args()
+
 
 def main() -> None:
     args = parse_args()
+    runtime_cfg = load_runtime_config(args.config)
 
-    repo_root = Path(__file__).resolve().parents[1] 
-    env = os.environ.copy() 
+    repo_root = REPO_ROOT
+    env = os.environ.copy()
     env.setdefault("TRANSFORMERS_NO_TF", "1")
     env.setdefault("TRANSFORMERS_NO_FLAX", "1")
     env.setdefault("USE_TF", "0")
     env.setdefault("USE_FLAX", "0")
     env.setdefault("TOKENIZERS_PARALLELISM", "false")
-    env.setdefault("PYTHONUNBUFFERED", "1") # for logs to appear immediately
-    src_path = str(repo_root / "src")
-    env["PYTHONPATH"] = src_path + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    env.setdefault("PYTHONUNBUFFERED", "1")  # for logs to appear immediately
+    python_paths = [str(repo_root), str(repo_root / "src")]
+    env["PYTHONPATH"] = os.pathsep.join(python_paths) + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
 
-    # Defining output directories
-    finetune_dir = Path(args.output_root) / "finetune"
-    unlearn_dir = Path(args.output_root) / "unlearning"
-    compare_dir = Path(args.output_root) / "comparison"
+    data_dir = resolve_value(args.data_dir, runtime_cfg, ("data", "data_dir"), "data")
+    split_path = resolve_value(
+        args.split_path,
+        runtime_cfg,
+        ("data", "split_path"),
+        "outputs/splits/cifar10_split.json",
+    )
+    model_name = resolve_value(
+        args.model_name,
+        runtime_cfg,
+        ("model", "model_name"),
+        "openai/clip-vit-base-patch32",
+    )
+    forget_classes = resolve_value(
+        args.forget_classes, runtime_cfg, ("data", "forget_classes"), "3,5"
+    )
+    forget_fraction = resolve_value(
+        args.forget_fraction, runtime_cfg, ("data", "forget_fraction"), 1.0
+    )
+    ft_batch_size = resolve_value(
+        args.batch_size, runtime_cfg, ("training", "batch_size"), 128
+    )
+    ft_num_workers = resolve_value(
+        args.num_workers, runtime_cfg, ("training", "num_workers"), 4
+    )
+    ft_epochs = resolve_value(args.ft_epochs, runtime_cfg, ("training", "epochs"), 10)
+    ft_max_steps = resolve_value(
+        args.ft_max_steps, runtime_cfg, ("training", "max_train_steps"), -1
+    )
+    ul_batch_size = resolve_value(
+        args.batch_size, runtime_cfg, ("unlearning", "batch_size"), 128
+    )
+    ul_num_workers = resolve_value(
+        args.num_workers, runtime_cfg, ("unlearning", "num_workers"), 4
+    )
+    ul_steps = resolve_value(args.ul_steps, runtime_cfg, ("unlearning", "steps"), 500)
+    attack_batch_size = resolve_value(
+        args.batch_size, runtime_cfg, ("attack", "batch_size"), 128
+    )
+    attack_num_workers = resolve_value(
+        args.num_workers, runtime_cfg, ("attack", "num_workers"), 4
+    )
+    methods = resolve_str_list(
+        args.methods,
+        runtime_cfg,
+        ("unlearning", "methods"),
+        ("retain_only", "ga_kl", "counterfactual_rebind"),
+    )
+    seed = resolve_value(args.seed, runtime_cfg, ("experiment", "seed"), 42)
+    device = resolve_value(args.device, runtime_cfg, ("experiment", "device"), "auto")
+
+    if args.output_root is not None:
+        output_root = Path(args.output_root)
+        finetune_dir = output_root / "finetune"
+        unlearn_dir = output_root / "unlearning"
+        compare_dir = output_root / "comparison"
+    else:
+        finetune_dir = Path(
+            resolve_value(
+                None, runtime_cfg, ("training", "output_dir"), "outputs/finetune"
+            )
+        )
+        unlearn_dir = Path(
+            resolve_value(
+                None, runtime_cfg, ("unlearning", "output_dir"), "outputs/unlearning"
+            )
+        )
+        compare_dir = Path(
+            resolve_value(
+                None, runtime_cfg, ("attack", "output_dir"), "outputs/comparison"
+            )
+        )
 
     # Data Preparation command
     run_cmd(
         [
             sys.executable,
             str(repo_root / "scripts" / "prepare_data.py"),
+            "--config",
+            args.config,
             "--data-dir",
-            args.data_dir,
+            data_dir,
             "--split-path",
-            args.split_path,
+            split_path,
             "--forget-classes",
-            args.forget_classes,
+            forget_classes,
             "--forget-fraction",
-            str(args.forget_fraction),
+            str(forget_fraction),
             "--seed",
-            str(args.seed),
+            str(seed),
         ],
         env,
     )
@@ -74,26 +162,28 @@ def main() -> None:
         [
             sys.executable,
             str(repo_root / "scripts" / "train_vlm.py"),
+            "--config",
+            args.config,
             "--data-dir",
-            args.data_dir,
+            data_dir,
             "--split-path",
-            args.split_path,
+            split_path,
             "--output-dir",
             str(finetune_dir),
             "--model-name",
-            args.model_name,
+            model_name,
             "--batch-size",
-            str(args.batch_size),
+            str(ft_batch_size),
             "--num-workers",
-            str(args.num_workers),
+            str(ft_num_workers),
             "--epochs",
-            str(args.ft_epochs),
+            str(ft_epochs),
             "--max-train-steps",
-            str(args.ft_max_steps),
+            str(ft_max_steps),
             "--seed",
-            str(args.seed),
+            str(seed),
             "--device",
-            args.device,
+            device,
         ],
         env,
     )
@@ -101,16 +191,17 @@ def main() -> None:
     finetuned_ckpt = finetune_dir / "checkpoints" / "finetuned_best.pt"
     base_ckpt = finetune_dir / "checkpoints" / "base_init.pt"
 
-    methods = [m.strip() for m in args.methods.split(",") if m.strip()]
     for method in methods:
         run_cmd(
             [
                 sys.executable,
                 str(repo_root / "scripts" / "run_unlearning.py"),
+                "--config",
+                args.config,
                 "--data-dir",
-                args.data_dir,
+                data_dir,
                 "--split-path",
-                args.split_path,
+                split_path,
                 "--finetuned-checkpoint",
                 str(finetuned_ckpt),
                 "--output-dir",
@@ -118,17 +209,17 @@ def main() -> None:
                 "--method",
                 method,
                 "--model-name",
-                args.model_name,
+                model_name,
                 "--batch-size",
-                str(args.batch_size),
+                str(ul_batch_size),
                 "--num-workers",
-                str(args.num_workers),
+                str(ul_num_workers),
                 "--steps",
-                str(args.ul_steps),
+                str(ul_steps),
                 "--seed",
-                str(args.seed),
+                str(seed),
                 "--device",
-                args.device,
+                device,
             ],
             env,
         )
@@ -149,22 +240,24 @@ def main() -> None:
         [
             sys.executable,
             str(repo_root / "scripts" / "evaluate_attacks.py"),
+            "--config",
+            args.config,
             "--data-dir",
-            args.data_dir,
+            data_dir,
             "--split-path",
-            args.split_path,
+            split_path,
             "--model-name",
-            args.model_name,
+            model_name,
             "--base-checkpoint",
             str(base_ckpt),
             "--output-dir",
             str(compare_dir),
             "--batch-size",
-            str(args.batch_size),
+            str(attack_batch_size),
             "--num-workers",
-            str(args.num_workers),
+            str(attack_num_workers),
             "--device",
-            args.device,
+            device,
             *candidate_args,
         ],
         env,
@@ -172,6 +265,7 @@ def main() -> None:
 
     print(f"[done] comparison markdown: {compare_dir / 'comparison.md'}")
     print(f"[done] comparison plot: {compare_dir / 'utility_vs_forget.png'}")
+
 
 if __name__ == "__main__":
     main()
