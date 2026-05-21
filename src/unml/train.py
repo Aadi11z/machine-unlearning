@@ -15,7 +15,7 @@ from transformers import CLIPImageProcessor, CLIPTokenizer
 from .data import CIFAR10_CLASSES, build_loaders, build_text_inputs
 from .evaluate import evaluate_classification
 from .model import ModelConfig, LightweightVLM, save_checkpoint
-from .tracker import log_finetune_epoch, log_finetune_summary
+from helpers.tracker import log_finetune_epoch, log_finetune_summary
 from .utils import format_metrics, get_device, save_json, set_seed, tensor_to_float
 
 

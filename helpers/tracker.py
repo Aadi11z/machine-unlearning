@@ -7,10 +7,9 @@ Two tracker files are maintained at the project root:
 
 from __future__ import annotations
 
-import os
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, Sequence
 
 
 def _project_root() -> Path:
@@ -178,7 +177,7 @@ def update_unlearn_with_attacks(method: str, attack_metrics: Dict[str, float]) -
     and fills in the attack columns if they were empty.
     """
     root = _project_root()
-    path = root / "c.md"
+    path = root / "UNLEARN_EVAL_TRACKER.md"
     if not path.exists():
         return
 
@@ -194,7 +193,7 @@ def update_unlearn_with_attacks(method: str, attack_metrics: Dict[str, float]) -
                 parts[_UL_PARTS_IDX["mia_auc_conf"]] = _fmt(attack_metrics.get("mia_auc_confidence", 0.0))
                 parts[_UL_PARTS_IDX["mia_auc_delta"]] = _fmt(attack_metrics.get("mia_auc_delta", 0.0))
                 parts[_UL_PARTS_IDX["forget_drop"]] = _fmt(attack_metrics.get("forget_drop", 0.0))
-                lines[i] = " | ".join(parts)
+                lines[i] = "| " + " | ".join(parts[1:-1]) + " |"
             break
 
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")

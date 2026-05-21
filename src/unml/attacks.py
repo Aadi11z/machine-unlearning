@@ -15,7 +15,7 @@ from transformers import CLIPImageProcessor, CLIPTokenizer
 from .data import CIFAR10_CLASSES, build_loaders, build_text_inputs
 from .evaluate import collect_true_class_confidences, evaluate_classification
 from .model import load_checkpoint
-from .tracker import update_unlearn_with_attacks
+from helpers.tracker import update_unlearn_with_attacks
 from .utils import get_device
 
 

@@ -11,6 +11,7 @@ os.environ.setdefault("USE_TF", "0")
 os.environ.setdefault("USE_FLAX", "0")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-SRC = Path(__file__).resolve().parents[1] / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
+REPO_ROOT = Path(__file__).resolve().parents[1]
+for path in (REPO_ROOT, REPO_ROOT / "src"):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
