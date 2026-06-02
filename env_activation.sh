@@ -2,7 +2,12 @@
 # Run with: source env_activation.sh
 # Need to run before any session
 
-SCRATCH_PROJECT=""
+SCRATCH_PROJECT="${SCRATCH_PROJECT:-/<dummy>/<path>}"
+
+# Deactivate the default env and activate project specific env
+if [[ "${CONDA_DEFAULT_ENV:-}" == "base" ]]; then
+    conda deactivate
+fi
 
 # Activate Venv
 if [[ ! -d "$SCRATCH_PROJECT/unml-env" ]]; then
