@@ -471,6 +471,13 @@ def _load_dataset_pair(
     return train_ds, test_ds
 
 
+def load_dataset_pair(
+    data_dir: str, dataset_name: str, download: bool = False
+) -> tuple[Dataset, Dataset]:
+    """Load the configured train/test datasets for inspection or evaluation."""
+    return _load_dataset_pair(data_dir, dataset_name, download)
+
+
 def download_and_prepare_splits(
     data_dir: str,
     split_path: str,

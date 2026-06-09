@@ -19,6 +19,7 @@ This creates a controllable forgetting mechanism that is stronger than retain-on
 - `src/unml/train.py`: finetuning pipeline
 - `src/unml/unlearn.py`: unlearning methods
 - `src/unml/attacks.py`: membership-inference attacks + tradeoff plot/report
+- `src/unml/probe.py`: sample- and class-level checkpoint inspection
 - `scripts/*.py`: CLI entrypoints
 - `scripts/run_pipeline.py`: full experiment orchestration
 
@@ -186,6 +187,21 @@ outputs produce:
 Delta-MIA scores are aligned by dataset index before subtraction, so shuffled
 forget loaders cannot compare different samples. Base-model outputs are
 computed once and reused across all candidate checkpoints.
+
+Manually inspect selected examples across the fine-tuned reference and
+unlearned checkpoints:
+
+```bash
+python scripts/probe_checkpoint.py --offline --device cuda
+```
+
+The default test probe selects examples from the configured target classes.
+Use `--class-name rose`, `--class-id 70`, or repeatable `--index` arguments for
+specific checks. With `--source train` and no selector, it samples the exact
+`forget_indices` recorded in the split. Results are written as CSV, JSON,
+Markdown, and optional source images under the request-specific `probes/`
+directory. This is a per-example diagnostic; paper claims still require the
+aggregate evaluation metrics above.
 
 ## Notes
 - CIFAR-10 backbone: `openai/clip-vit-base-patch32` (frozen).

@@ -119,3 +119,9 @@ attack:
       persistent_workers: true
       non_blocking: true
   max_attack_samples: 4000
+
+probe:
+  source: test
+  limit_per_class: 5
+  top_k: 5
+  save_images: true
