@@ -8,6 +8,7 @@ import pytest
 
 
 SCRIPTS = [
+    "scripts/cache_model.py",
     "scripts/prepare_data.py",
     "scripts/train_vlm.py",
     "scripts/run_unlearning.py",

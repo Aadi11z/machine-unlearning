@@ -25,6 +25,7 @@ from unml.config import (
     resolve_stage_output_dir,
     resolve_value,
 )
+from unml.utils import transformers_offline
 
 
 def parse_args() -> argparse.Namespace:
@@ -87,6 +88,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weight-decay", type=float, default=None)
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--max-train-steps", type=int, default=None)
+    parser.add_argument("--max-eval-batches", type=int, default=None)
+    parser.add_argument(
+        "--smoke",
+        action="store_true",
+        help="Run the configured short benchmark with bounded evaluation",
+    )
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="Require model/tokenizer/processor artifacts to exist in cache",
+    )
 
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--device", type=str, default=None)
@@ -110,21 +122,32 @@ def main() -> None:
         lora_targets = [
             target.strip() for target in lora_targets.split(",") if target.strip()
         ]
+    default_output_dir = resolve_stage_output_dir(
+        args.output_dir,
+        runtime_cfg,
+        dataset_name,
+        "training",
+        args.request,
+    )
+    if args.smoke and args.output_dir is None:
+        default_output_dir = default_output_dir.parent / "phase2_benchmark"
+
+    smoke_epochs = resolve_value(
+        None, runtime_cfg, ("training", "smoke", "epochs"), 1
+    )
+    smoke_steps = resolve_value(
+        None, runtime_cfg, ("training", "smoke", "max_train_steps"), 50
+    )
+    smoke_eval_batches = resolve_value(
+        None, runtime_cfg, ("training", "smoke", "max_eval_batches"), 2
+    )
 
     from unml.train import FineTuneConfig, run_finetuning
 
     cfg = FineTuneConfig(
         data_dir=str(resolve_data_dir(args.data_dir, runtime_cfg)),
         split_path=split_path,
-        output_dir=str(
-            resolve_stage_output_dir(
-                args.output_dir,
-                runtime_cfg,
-                dataset_name,
-                "training",
-                args.request,
-            )
-        ),
+        output_dir=str(default_output_dir),
         dataset_name=dataset_name,
         model_name=resolve_model_value(
             args.model_name,
@@ -203,14 +226,32 @@ def main() -> None:
         weight_decay=resolve_value(
             args.weight_decay, runtime_cfg, ("training", "weight_decay"), 1e-4
         ),
-        epochs=resolve_value(args.epochs, runtime_cfg, ("training", "epochs"), 5),
-        max_train_steps=resolve_value(
-            args.max_train_steps, runtime_cfg, ("training", "max_train_steps"), -1
+        epochs=(
+            resolve_value(args.epochs, runtime_cfg, ("training", "epochs"), 5)
+            if not args.smoke or args.epochs is not None
+            else smoke_epochs
+        ),
+        max_train_steps=(
+            resolve_value(
+                args.max_train_steps,
+                runtime_cfg,
+                ("training", "max_train_steps"),
+                -1,
+            )
+            if not args.smoke or args.max_train_steps is not None
+            else smoke_steps
         ),
         seed=resolve_value(args.seed, runtime_cfg, ("experiment", "seed"), 42),
         device=resolve_value(
             args.device, runtime_cfg, ("experiment", "device"), "auto"
         ),
+        local_files_only=args.offline or transformers_offline(),
+        max_eval_batches=(
+            args.max_eval_batches
+            if args.max_eval_batches is not None
+            else smoke_eval_batches if args.smoke else None
+        ),
+        smoke_mode=args.smoke,
     )
     result = run_finetuning(cfg)
     print(result)

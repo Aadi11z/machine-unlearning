@@ -70,6 +70,10 @@ training:
   weight_decay: 0.0001
   epochs: 10
   max_train_steps: -1
+  smoke:
+    epochs: 1
+    max_train_steps: 50
+    max_eval_batches: 2
 
 unlearning:
   batch_size: 128

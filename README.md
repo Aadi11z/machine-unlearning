@@ -84,6 +84,24 @@ Run the complete configured pipeline:
 python scripts/run_pipeline.py
 ```
 
+Before requesting a GPU on Sharanga, populate and verify the Hugging Face
+cache on the login node:
+
+```bash
+python scripts/cache_model.py
+```
+
+Run the bounded infrastructure smoke test through a GPU batch job:
+
+```bash
+python scripts/train_vlm.py --smoke --offline --device cuda
+```
+
+Smoke settings are stored under `training.smoke` in
+`config/parameters.yaml`. Smoke artifacts are isolated under
+`phase2_benchmark`, marked as partial, and must not be used as research
+results.
+
 Artifacts remain isolated:
 
 ```text

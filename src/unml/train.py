@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict
 
@@ -19,6 +19,7 @@ from .evaluate import build_class_text_features, evaluate_classification
 from .model import ModelConfig, LightweightVLM, precision_context, save_checkpoint
 from helpers.tracker import log_finetune_epoch, log_finetune_summary
 from .utils import format_metrics, get_device, save_json, set_seed, tensor_to_float
+from .utils import collect_run_provenance
 
 
 @dataclass
@@ -48,9 +49,18 @@ class FineTuneConfig:
     max_train_steps: int = -1
     seed: int = 42
     device: str = "auto"
+    local_files_only: bool = False
+    max_eval_batches: int | None = None
+    smoke_mode: bool = False
 
 
-def _evaluate_all(model, loaders, class_text_inputs, device: torch.device) -> Dict[str, float]:
+def _evaluate_all(
+    model,
+    loaders,
+    class_text_inputs,
+    device: torch.device,
+    max_batches: int | None = None,
+) -> Dict[str, float]:
     model.eval()
     class_text_features = build_class_text_features(
         model, class_text_inputs, device
@@ -59,6 +69,7 @@ def _evaluate_all(model, loaders, class_text_inputs, device: torch.device) -> Di
         "class_text_inputs": class_text_inputs,
         "device": device,
         "class_text_features": class_text_features,
+        "max_batches": max_batches,
     }
     retain_val = evaluate_classification(
         model, loaders["retain_val"], **evaluation_args
@@ -84,8 +95,11 @@ def _evaluate_all(model, loaders, class_text_inputs, device: torch.device) -> Di
 def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
     if cfg.gradient_accumulation_steps < 1:
         raise ValueError("gradient_accumulation_steps must be at least 1")
+    run_started = time.perf_counter()
     set_seed(cfg.seed)
     device = get_device(cfg.device)
+    provenance = collect_run_provenance(device)
+    resolved_config = asdict(cfg)
 
     output_dir = Path(cfg.output_dir)
     ckpt_dir = output_dir / "checkpoints"
@@ -93,8 +107,12 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     metrics_dir.mkdir(parents=True, exist_ok=True)
 
-    image_processor = CLIPImageProcessor.from_pretrained(cfg.model_name)
-    tokenizer = CLIPTokenizer.from_pretrained(cfg.model_name)
+    image_processor = CLIPImageProcessor.from_pretrained(
+        cfg.model_name, local_files_only=cfg.local_files_only
+    )
+    tokenizer = CLIPTokenizer.from_pretrained(
+        cfg.model_name, local_files_only=cfg.local_files_only
+    )
     _, dataset_spec, class_names = load_split_metadata(
         cfg.split_path, cfg.dataset_name
     )
@@ -124,9 +142,11 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
         train_logit_scale=cfg.train_logit_scale,
         precision=cfg.precision,
         gradient_checkpointing=cfg.gradient_checkpointing,
+        local_files_only=cfg.local_files_only,
     )
 
     model = LightweightVLM.from_config(model_cfg).to(device)
+    setup_seconds = time.perf_counter() - run_started
 
     model.clip.eval()
     class_text_inputs = {
@@ -150,6 +170,9 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
             "dataset": dataset_spec.name,
             "class_names": class_names,
             "architecture": model.architecture_summary(),
+            "provenance": provenance,
+            "training_config": resolved_config,
+            "smoke_mode": cfg.smoke_mode,
         },
     )
 
@@ -164,6 +187,7 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
     best_path = ckpt_dir / "finetuned_best.pt"
     global_step = 0
     processed_examples = 0
+    gradient_parameter_count = 0
     training_started = time.perf_counter()
     show_progress = os.environ.get("UNML_TQDM", "0") == "1"
     final_metrics: Dict[str, float] | None = None
@@ -193,8 +217,19 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
                         class_text_features=cached_train_text_features,
                     )
                 loss = F.cross_entropy(logits, batch["labels"])
+            if not torch.isfinite(loss):
+                raise FloatingPointError(
+                    f"Non-finite fine-tuning loss at epoch {epoch + 1}, "
+                    f"optimizer step {global_step}"
+                )
 
             (loss / cfg.gradient_accumulation_steps).backward()
+            if gradient_parameter_count == 0:
+                gradient_parameter_count = sum(
+                    parameter.grad is not None
+                    and bool(torch.count_nonzero(parameter.grad).item())
+                    for parameter in model.trainable_parameters()
+                )
             should_step = (
                 (batch_index + 1) % cfg.gradient_accumulation_steps == 0
                 or batch_index + 1 == len(loaders["finetune_train"])
@@ -224,7 +259,13 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
             ):
                 break
 
-        eval_metrics = _evaluate_all(model, loaders, class_text_inputs, device)
+        eval_metrics = _evaluate_all(
+            model,
+            loaders,
+            class_text_inputs,
+            device,
+            max_batches=cfg.max_eval_batches,
+        )
         final_metrics = eval_metrics
         epoch_loss = sum(epoch_losses) / max(1, len(epoch_losses))
         full_metrics = {"epoch": float(epoch + 1), "train_loss": epoch_loss, **eval_metrics}
@@ -243,6 +284,9 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
                     "dataset": dataset_spec.name,
                     "class_names": class_names,
                     "architecture": model.architecture_summary(),
+                    "provenance": provenance,
+                    "training_config": resolved_config,
+                    "smoke_mode": cfg.smoke_mode,
                     "metrics": eval_metrics,
                 },
             )
@@ -257,6 +301,7 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
         else 0.0
     )
     benchmark = {
+        "setup_seconds": setup_seconds,
         "training_seconds": training_seconds,
         "processed_examples": processed_examples,
         "examples_per_second": (
@@ -273,7 +318,19 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
     }
     if final_metrics is None:
         raise RuntimeError("Fine-tuning completed without an evaluation snapshot")
+    if cfg.smoke_mode and gradient_parameter_count == 0:
+        raise RuntimeError("Smoke test found no non-zero trainable gradients")
+    checkpoint_payload = torch.load(best_path, map_location="cpu")
+    checkpoint_payload_verified = {
+        "model_config",
+        "adapter_state_dict",
+        "architecture",
+        "extra",
+    }.issubset(checkpoint_payload)
+    if not checkpoint_payload_verified:
+        raise RuntimeError(f"Checkpoint payload verification failed: {best_path}")
     metrics_path = metrics_dir / "finetune_metrics.json"
+    benchmark["total_seconds"] = time.perf_counter() - run_started
     save_json(
         {
             "best_retain_val_acc": best_metric,
@@ -286,6 +343,13 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
             "cached_train_text_features": (
                 cached_train_text_features is not None
             ),
+            "smoke_mode": cfg.smoke_mode,
+            "max_eval_batches": cfg.max_eval_batches,
+            "evaluation_is_partial": cfg.max_eval_batches is not None,
+            "gradient_parameter_count": gradient_parameter_count,
+            "checkpoint_payload_verified": checkpoint_payload_verified,
+            "provenance": provenance,
+            "config": resolved_config,
         },
         metrics_path,
     )

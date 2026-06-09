@@ -10,6 +10,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers import CLIPModel
 
+from .utils import transformers_offline
+
 
 POST_PROJECTION_ADAPTER = "post_projection"
 VISION_LORA_ADAPTER = "vision_lora"
@@ -38,6 +40,7 @@ class ModelConfig:
     train_logit_scale: bool = True
     precision: str = "fp32"
     gradient_checkpointing: bool = False
+    local_files_only: bool = False
 
     def __post_init__(self) -> None:
         if self.adapter_type not in SUPPORTED_ADAPTER_TYPES:
@@ -152,7 +155,10 @@ class LightweightVLM(nn.Module):
     def __init__(self, cfg: ModelConfig):
         super().__init__()
         self.cfg = cfg
-        self.clip = CLIPModel.from_pretrained(cfg.model_name)
+        self.clip = CLIPModel.from_pretrained(
+            cfg.model_name,
+            local_files_only=cfg.local_files_only or transformers_offline(),
+        )
         for param in self.clip.parameters():
             param.requires_grad = False
 

@@ -7,7 +7,14 @@ import numpy as np
 import pytest
 import torch
 
-from unml.utils import format_metrics, get_device, set_seed
+from unml.utils import (
+    collect_run_provenance,
+    environment_flag,
+    format_metrics,
+    get_device,
+    set_seed,
+    transformers_offline,
+)
 
 
 def test_format_metrics_sorts_keys() -> None:
@@ -40,3 +47,28 @@ def test_get_device_auto_falls_back_to_cpu(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     monkeypatch.setattr(torch, "backends", SimpleNamespace(mps=SimpleNamespace(is_available=lambda: False)))
     assert get_device("auto").type == "cpu"
+
+
+def test_transformers_offline_accepts_common_truthy_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HF_HUB_OFFLINE", "true")
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
+
+    assert environment_flag("HF_HUB_OFFLINE")
+    assert transformers_offline()
+
+
+def test_collect_run_provenance_records_cpu_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("unml.utils.git_commit", lambda _root=None: "abc123")
+    monkeypatch.setenv("SLURM_JOB_ID", "42")
+
+    provenance = collect_run_provenance(torch.device("cpu"))
+
+    assert provenance["git_commit"] == "abc123"
+    assert provenance["device"] == "cpu"
+    assert provenance["slurm_job_id"] == "42"
+    assert "python_version" in provenance
+    assert "torch_version" in provenance
