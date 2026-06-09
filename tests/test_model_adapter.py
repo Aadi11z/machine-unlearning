@@ -135,6 +135,35 @@ def test_full_vision_lora_injects_24_trainable_projections(monkeypatch) -> None:
     assert model.can_cache_text_features_during_training()
 
 
+def test_vision_lora_gradient_checkpointing_preserves_gradients(
+    monkeypatch,
+) -> None:
+    _patch_tiny_clip(monkeypatch, num_vision_layers=2)
+    model = LightweightVLM(
+        ModelConfig(
+            model_name="tiny",
+            adapter_type="vision_lora",
+            lora_layers="all",
+            gradient_checkpointing=True,
+            train_logit_scale=False,
+        )
+    )
+    model.set_train_mode()
+
+    loss = model.encode_images(torch.randn(2, 3, 32, 32)).sum()
+    loss.backward()
+
+    nonzero_gradients = [
+        name
+        for name, parameter in model.named_parameters()
+        if parameter.requires_grad
+        and parameter.grad is not None
+        and bool(torch.count_nonzero(parameter.grad).item())
+    ]
+    assert nonzero_gradients
+    assert all(".lora_" in name for name in nonzero_gradients)
+
+
 def test_post_projection_adapter_does_not_cache_trainable_text_features(
     monkeypatch,
 ) -> None:

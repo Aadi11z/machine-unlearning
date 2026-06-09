@@ -205,12 +205,15 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
     processed_examples = 0
     gradient_parameter_count = 0
     training_started = time.perf_counter()
+    optimization_seconds = 0.0
+    evaluation_seconds = 0.0
     show_progress = os.environ.get("UNML_TQDM", "0") == "1"
     final_metrics: Dict[str, float] | None = None
 
     for epoch in range(cfg.epochs):
         model.set_train_mode()
         epoch_losses = []
+        optimization_started = time.perf_counter()
         progress = tqdm(
             loaders["finetune_train"],
             desc=f"finetune epoch {epoch+1}/{cfg.epochs}",
@@ -276,7 +279,9 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
                 and global_step >= cfg.max_train_steps
             ):
                 break
+        optimization_seconds += time.perf_counter() - optimization_started
 
+        evaluation_started = time.perf_counter()
         eval_metrics = _evaluate_all(
             model,
             loaders,
@@ -285,6 +290,7 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
             max_batches=cfg.max_eval_batches,
             non_blocking=cfg.non_blocking,
         )
+        evaluation_seconds += time.perf_counter() - evaluation_started
         final_metrics = eval_metrics
         epoch_loss = sum(epoch_losses) / max(1, len(epoch_losses))
         full_metrics = {"epoch": float(epoch + 1), "train_loss": epoch_loss, **eval_metrics}
@@ -322,9 +328,16 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
     benchmark = {
         "setup_seconds": setup_seconds,
         "training_seconds": training_seconds,
+        "optimization_seconds": optimization_seconds,
+        "evaluation_seconds": evaluation_seconds,
         "processed_examples": processed_examples,
         "examples_per_second": (
             processed_examples / training_seconds if training_seconds > 0 else 0.0
+        ),
+        "optimization_examples_per_second": (
+            processed_examples / optimization_seconds
+            if optimization_seconds > 0
+            else 0.0
         ),
         "peak_gpu_memory_mb": peak_memory_mb,
         "physical_batch_size": cfg.batch_size,

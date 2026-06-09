@@ -84,6 +84,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=None)
     parser.add_argument("--num-workers", type=int, default=None)
+    parser.add_argument(
+        "--pin-memory",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--persistent-workers",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument("--prefetch-factor", type=int, default=None)
+    parser.add_argument(
+        "--non-blocking",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
     parser.add_argument("--lr", type=float, default=None)
     parser.add_argument("--weight-decay", type=float, default=None)
     parser.add_argument("--epochs", type=int, default=None)
@@ -228,7 +244,7 @@ def main() -> None:
             4,
         ),
         pin_memory=resolve_section_value(
-            None,
+            args.pin_memory,
             runtime_cfg,
             dataset_name,
             "training",
@@ -236,7 +252,7 @@ def main() -> None:
             True,
         ),
         persistent_workers=resolve_section_value(
-            None,
+            args.persistent_workers,
             runtime_cfg,
             dataset_name,
             "training",
@@ -244,7 +260,7 @@ def main() -> None:
             False,
         ),
         prefetch_factor=resolve_section_value(
-            None,
+            args.prefetch_factor,
             runtime_cfg,
             dataset_name,
             "training",
@@ -252,7 +268,7 @@ def main() -> None:
             2,
         ),
         non_blocking=resolve_section_value(
-            None,
+            args.non_blocking,
             runtime_cfg,
             dataset_name,
             "training",

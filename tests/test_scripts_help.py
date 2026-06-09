@@ -9,6 +9,7 @@ import pytest
 
 SCRIPTS = [
     "scripts/cache_model.py",
+    "scripts/benchmark_runtime.py",
     "scripts/prepare_data.py",
     "scripts/train_vlm.py",
     "scripts/run_unlearning.py",
@@ -60,3 +61,30 @@ def test_pipeline_cifar100_selects_vit_b16_vision_lora() -> None:
     assert proc.returncode == 0
     assert "model_name=openai/clip-vit-base-patch16" in proc.stdout
     assert "adapter_type=vision_lora" in proc.stdout
+
+
+def test_runtime_benchmark_show_commands_is_non_executing() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    cmd = [
+        sys.executable,
+        str(repo_root / "scripts/benchmark_runtime.py"),
+        "--dataset",
+        "cifar100",
+        "--request",
+        "flowers_superclass",
+        "--variant",
+        "configured",
+        "--repeats",
+        "2",
+        "--show-commands",
+    ]
+    proc = subprocess.run(
+        cmd, capture_output=True, text=True, check=False, cwd=repo_root
+    )
+
+    assert proc.returncode == 0
+    assert proc.stdout.count("[benchmark]") == 2
+    assert "repeat_01" in proc.stdout
+    assert "repeat_02" in proc.stdout
+    assert "--smoke" in proc.stdout
+    assert "--offline" in proc.stdout

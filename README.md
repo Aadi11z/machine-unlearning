@@ -120,6 +120,21 @@ evaluation loaders are kept nonpersistent to avoid retaining many worker
 processes. The same controls apply to unlearning and attack evaluation.
 Throughput improvement must be measured on Sharanga before it is reported.
 
+Run the controlled runtime matrix on one A100 after caching the model:
+
+```bash
+python scripts/benchmark_runtime.py \
+  --dataset cifar100 \
+  --request flowers_superclass \
+  --repeats 3
+```
+
+The matrix compares the configured profile, disabled gradient checkpointing,
+synchronous input transfer, and eight workers. Every run uses an isolated
+smoke directory. Raw records and mean/standard-deviation summaries are written
+under `runtime_benchmark/`. The summarizer rejects mixed Git commits, GPU
+models, optimizer-step counts, or processed-example counts.
+
 Artifacts remain isolated:
 
 ```text
