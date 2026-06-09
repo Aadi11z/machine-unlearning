@@ -15,8 +15,20 @@ data:
       # deterministic subset of samples from the selected classes.
       forget_fraction: 1.0
     cifar100:
-      forget_classes: "54,62,70,82,92"
+      # Change this field to rose_selective for fine-class forgetting.
+      request: flowers_superclass
       forget_fraction: 1.0
+      requests:
+        flowers_superclass:
+          request_type: superclass
+          superclass: flowers
+          target_classes: "54,62,70,82,92"
+          sibling_classes: ""
+        rose_selective:
+          request_type: selective_class
+          superclass: flowers
+          target_classes: "70"
+          sibling_classes: "54,62,82,92"
 
 outputs:
   root: outputs/{dataset}

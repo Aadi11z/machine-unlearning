@@ -18,6 +18,7 @@ from unml.config import (
     resolve_dataset_value,
     resolve_forget_classes,
     resolve_output_root,
+    resolve_request_name,
     resolve_str_list,
     resolve_value,
 )
@@ -38,6 +39,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--data-dir", type=str, default=None)
     parser.add_argument("--dataset", type=str, default=None)
+    parser.add_argument("--request", type=str, default=None)
     parser.add_argument("--split-path", type=str, default=None)
     parser.add_argument("--model-name", type=str, default=None)
     parser.add_argument("--output-root", type=str, default=None)
@@ -65,8 +67,9 @@ def main() -> None:
     args = parse_args()
     runtime_cfg = load_runtime_config(args.config)
     dataset_name, split_path = resolve_dataset_and_split_path(
-        args.dataset, args.split_path, runtime_cfg
+        args.dataset, args.split_path, runtime_cfg, args.request
     )
+    request_name = resolve_request_name(args.request, runtime_cfg, dataset_name)
 
     repo_root = REPO_ROOT
     env = os.environ.copy()
@@ -89,7 +92,7 @@ def main() -> None:
         "openai/clip-vit-base-patch32",
     )
     forget_classes = resolve_forget_classes(
-        args.forget_classes, runtime_cfg, dataset_name
+        args.forget_classes, runtime_cfg, dataset_name, args.request
     )
     forget_fraction = resolve_dataset_value(
         args.forget_fraction,
@@ -131,7 +134,7 @@ def main() -> None:
     device = resolve_value(args.device, runtime_cfg, ("experiment", "device"), "auto")
 
     output_root = resolve_output_root(
-        args.output_root, runtime_cfg, dataset_name
+        args.output_root, runtime_cfg, dataset_name, args.request
     )
     finetune_dir = output_root / "finetune"
     unlearn_dir = output_root / "unlearning"
@@ -139,6 +142,7 @@ def main() -> None:
 
     if args.show_config:
         print(f"dataset={dataset_name}")
+        print(f"request={request_name or 'class_list'}")
         print(f"data_dir={data_dir}")
         print(f"split_path={split_path}")
         print(f"forget_classes={forget_classes}")
@@ -152,6 +156,8 @@ def main() -> None:
         print(f"device={device}")
         return
 
+    request_args = ["--request", request_name] if request_name else []
+
     # Data Preparation command
     run_cmd(
         [
@@ -163,6 +169,7 @@ def main() -> None:
             data_dir,
             "--dataset",
             dataset_name,
+            *request_args,
             "--split-path",
             split_path,
             "--forget-classes",
@@ -186,6 +193,7 @@ def main() -> None:
             data_dir,
             "--dataset",
             dataset_name,
+            *request_args,
             "--split-path",
             split_path,
             "--output-dir",
@@ -222,6 +230,7 @@ def main() -> None:
                 data_dir,
                 "--dataset",
                 dataset_name,
+                *request_args,
                 "--split-path",
                 split_path,
                 "--finetuned-checkpoint",
@@ -268,6 +277,7 @@ def main() -> None:
             data_dir,
             "--dataset",
             dataset_name,
+            *request_args,
             "--split-path",
             split_path,
             "--model-name",

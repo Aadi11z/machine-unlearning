@@ -34,6 +34,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--data-dir", type=str, default=None)
     parser.add_argument("--dataset", type=str, default=None)
+    parser.add_argument("--request", type=str, default=None)
     parser.add_argument("--split-path", type=str, default=None)
     parser.add_argument("--output-dir", type=str, default=None)
 
@@ -68,7 +69,7 @@ def main() -> None:
     args = parse_args()
     runtime_cfg = load_runtime_config(args.config)
     dataset_name, split_path = resolve_dataset_and_split_path(
-        args.dataset, args.split_path, runtime_cfg
+        args.dataset, args.split_path, runtime_cfg, args.request
     )
 
     from unml.train import FineTuneConfig, run_finetuning
@@ -78,7 +79,11 @@ def main() -> None:
         split_path=split_path,
         output_dir=str(
             resolve_stage_output_dir(
-                args.output_dir, runtime_cfg, dataset_name, "training"
+                args.output_dir,
+                runtime_cfg,
+                dataset_name,
+                "training",
+                args.request,
             )
         ),
         dataset_name=dataset_name,

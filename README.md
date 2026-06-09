@@ -47,6 +47,19 @@ The corresponding profile supplies its forget classes and fraction. CIFAR-10
 uses cat/dog (`3,5`). CIFAR-100 uses five flower classes
 (`54,62,70,82,92`).
 
+For CIFAR-100, select the deletion request in the same profile:
+
+```yaml
+data:
+  profiles:
+    cifar100:
+      request: flowers_superclass  # or rose_selective
+```
+
+- `flowers_superclass` forgets all five flower classes.
+- `rose_selective` forgets rose and records the other four flowers as sibling
+  retain classes.
+
 Inspect the resolved run without starting any work:
 
 ```bash
@@ -69,10 +82,16 @@ outputs/
     unlearning/
     comparison/
   cifar100/
-    splits/
-    finetune/
-    unlearning/
-    comparison/
+    flowers_superclass/
+      splits/
+      finetune/
+      unlearning/
+      comparison/
+    rose_selective/
+      splits/
+      finetune/
+      unlearning/
+      comparison/
 ```
 
 On Sharanga, `env_activation.sh` supplies `UNML_DATA` and `UNML_OUTPUTS`.

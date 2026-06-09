@@ -134,17 +134,84 @@ CIFAR100_CLASSES = (
     "worm",
 )
 
+CIFAR100_SUPERCLASS_NAMES = {
+    "aquatic_mammals": ("beaver", "dolphin", "otter", "seal", "whale"),
+    "fish": ("aquarium fish", "flatfish", "ray", "shark", "trout"),
+    "flowers": ("orchid", "poppy", "rose", "sunflower", "tulip"),
+    "food_containers": ("bottle", "bowl", "can", "cup", "plate"),
+    "fruit_and_vegetables": (
+        "apple",
+        "mushroom",
+        "orange",
+        "pear",
+        "sweet pepper",
+    ),
+    "household_electrical_devices": (
+        "clock",
+        "keyboard",
+        "lamp",
+        "telephone",
+        "television",
+    ),
+    "household_furniture": ("bed", "chair", "couch", "table", "wardrobe"),
+    "insects": ("bee", "beetle", "butterfly", "caterpillar", "cockroach"),
+    "large_carnivores": ("bear", "leopard", "lion", "tiger", "wolf"),
+    "large_man_made_outdoor_things": (
+        "bridge",
+        "castle",
+        "house",
+        "road",
+        "skyscraper",
+    ),
+    "large_omnivores_and_herbivores": (
+        "camel",
+        "cattle",
+        "chimpanzee",
+        "elephant",
+        "kangaroo",
+    ),
+    "medium_sized_mammals": (
+        "fox",
+        "porcupine",
+        "possum",
+        "raccoon",
+        "skunk",
+    ),
+    "non_insect_invertebrates": ("crab", "lobster", "snail", "spider", "worm"),
+    "people": ("baby", "boy", "girl", "man", "woman"),
+    "reptiles": ("crocodile", "dinosaur", "lizard", "snake", "turtle"),
+    "small_mammals": ("hamster", "mouse", "rabbit", "shrew", "squirrel"),
+    "trees": (
+        "maple tree",
+        "oak tree",
+        "palm tree",
+        "pine tree",
+        "willow tree",
+    ),
+    "vehicles_1": ("bicycle", "bus", "motorcycle", "pickup truck", "train"),
+    "vehicles_2": ("lawn mower", "rocket", "streetcar", "tank", "tractor"),
+    "natural_outdoor_scenes": ("cloud", "forest", "mountain", "plain", "sea"),
+}
+
+CIFAR100_SUPERCLASSES = {
+    name: tuple(CIFAR100_CLASSES.index(class_name) for class_name in class_names)
+    for name, class_names in CIFAR100_SUPERCLASS_NAMES.items()
+}
+
 
 @dataclass(frozen=True)
 class DatasetSpec:
     name: str
     dataset_class: type[Dataset]
     class_names: tuple[str, ...]
+    superclasses: Mapping[str, tuple[int, ...]]
 
 
 DATASET_REGISTRY: dict[str, DatasetSpec] = {
-    "cifar10": DatasetSpec("cifar10", CIFAR10, CIFAR10_CLASSES),
-    "cifar100": DatasetSpec("cifar100", CIFAR100, CIFAR100_CLASSES),
+    "cifar10": DatasetSpec("cifar10", CIFAR10, CIFAR10_CLASSES, {}),
+    "cifar100": DatasetSpec(
+        "cifar100", CIFAR100, CIFAR100_CLASSES, CIFAR100_SUPERCLASSES
+    ),
 }
 
 
@@ -154,6 +221,11 @@ class SplitConfig:
     forget_fraction: float
     retain_val_fraction: float
     seed: int
+    request_name: str | None = None
+    request_type: str | None = None
+    superclass: str | None = None
+    sibling_classes: Sequence[int] = ()
+    unrelated_classes: Sequence[int] = ()
 
 
 def get_dataset_spec(dataset_name: str) -> DatasetSpec:
@@ -200,6 +272,68 @@ def validate_checkpoint_dataset(
             f"Checkpoint {checkpoint_path} was created for {actual}, "
             f"but this run uses {expected}"
         )
+
+
+def validate_hierarchy_request(
+    spec: DatasetSpec,
+    cfg: SplitConfig,
+) -> tuple[list[int], list[int]]:
+    target_classes = sorted(set(int(class_id) for class_id in cfg.forget_classes))
+    sibling_classes = sorted(set(int(class_id) for class_id in cfg.sibling_classes))
+    all_classes = set(range(len(spec.class_names)))
+
+    invalid_classes = sorted(
+        class_id
+        for class_id in [*target_classes, *sibling_classes]
+        if class_id not in all_classes
+    )
+    if invalid_classes:
+        raise ValueError(
+            f"Invalid request classes for {spec.name}: {invalid_classes}; "
+            f"expected ids from 0 to {len(spec.class_names) - 1}"
+        )
+    if set(target_classes) & set(sibling_classes):
+        raise ValueError("Target and sibling classes must be disjoint")
+
+    if cfg.request_name is None:
+        return sibling_classes, sorted(
+            all_classes - set(target_classes) - set(sibling_classes)
+        )
+
+    if spec.name != "cifar100":
+        raise ValueError("Named hierarchy requests are currently supported for cifar100")
+    if cfg.request_type not in {"superclass", "selective_class"}:
+        raise ValueError(
+            f"Unsupported request_type={cfg.request_type!r}; "
+            "choose superclass or selective_class"
+        )
+    if cfg.superclass not in spec.superclasses:
+        raise ValueError(
+            f"Unknown CIFAR-100 superclass={cfg.superclass!r}; "
+            f"choose from {sorted(spec.superclasses)}"
+        )
+
+    superclass_classes = set(spec.superclasses[cfg.superclass])
+    if not set(target_classes).issubset(superclass_classes):
+        raise ValueError("Target classes must belong to the configured superclass")
+    if not set(sibling_classes).issubset(superclass_classes):
+        raise ValueError("Sibling classes must belong to the configured superclass")
+
+    if cfg.request_type == "superclass":
+        if set(target_classes) != superclass_classes or sibling_classes:
+            raise ValueError(
+                "Superclass requests must target every class and have no siblings"
+            )
+    else:
+        expected_siblings = superclass_classes - set(target_classes)
+        if set(sibling_classes) != expected_siblings:
+            raise ValueError(
+                "Selective-class requests must list every non-target class "
+                "in the superclass as a sibling"
+            )
+
+    unrelated_classes = sorted(all_classes - superclass_classes)
+    return sibling_classes, unrelated_classes
 
 
 class CIFARSubset(Dataset):
@@ -272,9 +406,18 @@ def make_splits(
     test_labels: Sequence[int],
     cfg: SplitConfig,
 ) -> Dict[str, List[int]]:
+    target_classes = sorted(set(int(class_id) for class_id in cfg.forget_classes))
+    sibling_classes = sorted(set(int(class_id) for class_id in cfg.sibling_classes))
+    excluded_hierarchy_classes = set(target_classes) | set(sibling_classes)
+    unrelated_classes = sorted(set(int(value) for value in cfg.unrelated_classes))
+    if not unrelated_classes:
+        unrelated_classes = sorted(
+            (set(train_labels) | set(test_labels)) - excluded_hierarchy_classes
+        )
+
     rng = random.Random(cfg.seed)
     forget_pool = [
-        i for i, label in enumerate(train_labels) if label in cfg.forget_classes
+        i for i, label in enumerate(train_labels) if label in target_classes
     ]
     forget_indices = sorted(_sample_indices(forget_pool, cfg.forget_fraction, rng))
     forget_set = set(forget_indices)
@@ -285,6 +428,12 @@ def make_splits(
     retain_train_indices = sorted(
         i for i in retain_all if i not in retain_val_set
     )
+    sibling_retain_train_indices = [
+        i for i in retain_train_indices if train_labels[i] in sibling_classes
+    ]
+    unrelated_retain_train_indices = [
+        i for i in retain_train_indices if train_labels[i] in unrelated_classes
+    ]
 
     return {
         "forget_indices": forget_indices,
@@ -292,13 +441,24 @@ def make_splits(
         "retain_val_indices": retain_val_indices,
         "finetune_train_indices": sorted(retain_train_indices + forget_indices),
         "test_forget_indices": [
-            i for i, label in enumerate(test_labels) if label in cfg.forget_classes
+            i for i, label in enumerate(test_labels) if label in target_classes
         ],
         "test_retain_indices": [
-            i for i, label in enumerate(test_labels) if label not in cfg.forget_classes
+            i for i, label in enumerate(test_labels) if label not in target_classes
+        ],
+        "sibling_retain_train_indices": sibling_retain_train_indices,
+        "unrelated_retain_train_indices": unrelated_retain_train_indices,
+        "test_sibling_indices": [
+            i for i, label in enumerate(test_labels) if label in sibling_classes
+        ],
+        "test_unrelated_indices": [
+            i for i, label in enumerate(test_labels) if label in unrelated_classes
         ],
         "test_all_indices": list(range(len(test_labels))),
-        "forget_classes": list(cfg.forget_classes),
+        "forget_classes": target_classes,
+        "target_classes": target_classes,
+        "sibling_classes": sibling_classes,
+        "unrelated_classes": unrelated_classes,
     }
 
 
@@ -319,18 +479,25 @@ def download_and_prepare_splits(
     retain_val_fraction: float,
     seed: int,
     dataset_name: str = "cifar10",
+    request_name: str | None = None,
+    request_type: str | None = None,
+    superclass: str | None = None,
+    sibling_classes: Sequence[int] = (),
 ) -> Dict[str, object]:
     spec = get_dataset_spec(dataset_name)
-    invalid_classes = sorted(
-        class_id
-        for class_id in forget_classes
-        if class_id < 0 or class_id >= len(spec.class_names)
+    split_cfg = SplitConfig(
+        forget_classes=forget_classes,
+        forget_fraction=forget_fraction,
+        retain_val_fraction=retain_val_fraction,
+        seed=seed,
+        request_name=request_name,
+        request_type=request_type,
+        superclass=superclass,
+        sibling_classes=sibling_classes,
     )
-    if invalid_classes:
-        raise ValueError(
-            f"Invalid forget classes for {spec.name}: {invalid_classes}; "
-            f"expected ids from 0 to {len(spec.class_names) - 1}"
-        )
+    sibling_classes, unrelated_classes = validate_hierarchy_request(spec, split_cfg)
+    split_cfg.sibling_classes = sibling_classes
+    split_cfg.unrelated_classes = unrelated_classes
 
     ensure_dir(data_dir)
     ensure_dir(Path(split_path).parent)
@@ -338,15 +505,18 @@ def download_and_prepare_splits(
     splits: Dict[str, object] = make_splits(
         train_ds.targets,
         test_ds.targets,
-        SplitConfig(
-            forget_classes=forget_classes,
-            forget_fraction=forget_fraction,
-            retain_val_fraction=retain_val_fraction,
-            seed=seed,
-        ),
+        split_cfg,
     )
     splits["dataset"] = spec.name
     splits["class_names"] = list(spec.class_names)
+    splits["request_name"] = request_name
+    splits["request_type"] = request_type
+    splits["superclass"] = superclass
+    splits["target_classes"] = sorted(set(int(value) for value in forget_classes))
+    splits["sibling_classes"] = sibling_classes
+    splits["unrelated_classes"] = unrelated_classes
+    splits["seed"] = seed
+    splits["forget_fraction"] = forget_fraction
     save_json(splits, split_path)
     return splits
 
@@ -408,6 +578,19 @@ def build_loaders(
         "test_forget": CIFARSubset(test_ds, split["test_forget_indices"]),
         "test_retain": CIFARSubset(test_ds, split["test_retain_indices"]),
         "test_all": CIFARSubset(test_ds, split["test_all_indices"]),
+        "sibling_retain": CIFARSubset(
+            train_ds, split.get("sibling_retain_train_indices", [])
+        ),
+        "unrelated_retain": CIFARSubset(
+            train_ds,
+            split.get("unrelated_retain_train_indices", split["retain_train_indices"]),
+        ),
+        "test_sibling": CIFARSubset(
+            test_ds, split.get("test_sibling_indices", [])
+        ),
+        "test_unrelated": CIFARSubset(
+            test_ds, split.get("test_unrelated_indices", split["test_retain_indices"])
+        ),
     }
 
     return {
@@ -418,6 +601,16 @@ def build_loaders(
         "test_forget": _loader(subsets["test_forget"], shuffle=False),
         "test_retain": _loader(subsets["test_retain"], shuffle=False),
         "test_all": _loader(subsets["test_all"], shuffle=False),
+        "sibling_retain": _loader(
+            subsets["sibling_retain"],
+            shuffle=len(subsets["sibling_retain"]) > 0,
+        ),
+        "unrelated_retain": _loader(
+            subsets["unrelated_retain"],
+            shuffle=len(subsets["unrelated_retain"]) > 0,
+        ),
+        "test_sibling": _loader(subsets["test_sibling"], shuffle=False),
+        "test_unrelated": _loader(subsets["test_unrelated"], shuffle=False),
     }
 
 
@@ -431,6 +624,14 @@ def summarize_splits(split_path: str) -> Mapping[str, int]:
         "test_forget_count": len(split["test_forget_indices"]),
         "test_retain_count": len(split["test_retain_indices"]),
         "test_all_count": len(split["test_all_indices"]),
+        "sibling_retain_count": len(
+            split.get("sibling_retain_train_indices", [])
+        ),
+        "unrelated_retain_count": len(
+            split.get("unrelated_retain_train_indices", [])
+        ),
+        "test_sibling_count": len(split.get("test_sibling_indices", [])),
+        "test_unrelated_count": len(split.get("test_unrelated_indices", [])),
     }
 
 
