@@ -3,9 +3,10 @@ from __future__ import annotations
 import os
 import math
 import time
+import hashlib
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict, Mapping
 
 import torch
 import torch.nn.functional as F
@@ -14,13 +15,25 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
 from transformers import CLIPImageProcessor, CLIPTokenizer
 
-from .data import build_loaders, build_text_inputs, load_split_metadata
+from .data import (
+    build_loaders,
+    build_text_inputs,
+    load_split_metadata,
+    validate_checkpoint_dataset,
+)
 from .evaluate import build_class_text_features, evaluate_classification
-from .model import ModelConfig, LightweightVLM, precision_context, save_checkpoint
+from .model import (
+    ModelConfig,
+    LightweightVLM,
+    load_checkpoint,
+    precision_context,
+    save_checkpoint,
+)
 from helpers.tracker import log_finetune_epoch, log_finetune_summary
 from .utils import (
     format_metrics,
     get_device,
+    load_json,
     move_to_device,
     save_json,
     set_seed,
@@ -63,6 +76,234 @@ class FineTuneConfig:
     local_files_only: bool = False
     max_eval_batches: int | None = None
     smoke_mode: bool = False
+    training_mode: str = "finetune"
+    train_loader_key: str = "finetune_train"
+    initial_checkpoint: str | None = None
+    source_metrics_path: str | None = None
+    target_optimizer_steps: int | None = None
+    target_scheduler_steps: int | None = None
+
+
+def _file_sha256(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def resolve_oracle_schedule(
+    source_metrics: Mapping[str, Any],
+) -> tuple[int, int]:
+    if bool(source_metrics.get("smoke_mode")):
+        raise ValueError("A smoke run cannot define the retraining oracle")
+    global_steps = int(source_metrics.get("global_steps", 0))
+    if global_steps < 1:
+        raise ValueError(
+            "Source fine-tuning metrics must contain positive global_steps"
+        )
+    benchmark = source_metrics.get("benchmark", {})
+    source_config = source_metrics.get("config", {})
+    has_scheduler_steps = (
+        isinstance(benchmark, Mapping)
+        and "scheduler_total_steps" in benchmark
+    )
+    if (
+        not has_scheduler_steps
+        and isinstance(source_config, Mapping)
+        and int(source_config.get("max_train_steps", -1)) > 0
+    ):
+        raise ValueError(
+            "Source metrics predate scheduler recording and used a training "
+            "step limit; the exact source schedule cannot be reconstructed"
+        )
+    scheduler_steps = (
+        int(benchmark.get("scheduler_total_steps", global_steps))
+        if isinstance(benchmark, Mapping)
+        else global_steps
+    )
+    if scheduler_steps < global_steps:
+        raise ValueError(
+            "scheduler_total_steps cannot be smaller than global_steps"
+        )
+    return global_steps, scheduler_steps
+
+
+def validate_retraining_split(split: Mapping[str, Any]) -> None:
+    forget = set(int(value) for value in split.get("forget_indices", []))
+    retain = set(int(value) for value in split.get("retain_train_indices", []))
+    overlap = sorted(forget & retain)
+    if overlap:
+        raise ValueError(
+            f"Retraining split leaks forgotten indices into retain_train: "
+            f"{overlap[:10]}"
+        )
+    if not retain:
+        raise ValueError("Retraining requires non-empty retain_train_indices")
+
+
+def _validate_training_mode(cfg: FineTuneConfig) -> None:
+    if cfg.training_mode not in {"finetune", "retrain_oracle"}:
+        raise ValueError(
+            "training_mode must be finetune or retrain_oracle"
+        )
+    if cfg.train_loader_key not in {"finetune_train", "retain_train"}:
+        raise ValueError(
+            "train_loader_key must be finetune_train or retain_train"
+        )
+    if cfg.training_mode == "retrain_oracle":
+        if cfg.train_loader_key != "retain_train":
+            raise ValueError(
+                "Retraining oracle must use the retain_train loader"
+            )
+        if not cfg.initial_checkpoint:
+            raise ValueError(
+                "Retraining oracle requires the original base checkpoint"
+            )
+        if not cfg.source_metrics_path:
+            raise ValueError(
+                "Retraining oracle requires source fine-tuning metrics"
+            )
+        if not cfg.target_optimizer_steps or cfg.target_optimizer_steps < 1:
+            raise ValueError(
+                "Retraining oracle requires positive target_optimizer_steps"
+            )
+        if (
+            cfg.target_scheduler_steps is not None
+            and cfg.target_scheduler_steps < cfg.target_optimizer_steps
+        ):
+            raise ValueError(
+                "target_scheduler_steps cannot be smaller than "
+                "target_optimizer_steps"
+            )
+
+
+def validate_oracle_source_config(
+    cfg: FineTuneConfig,
+    source_metrics: Mapping[str, Any],
+    initial_checkpoint_sha256: str,
+) -> None:
+    source_dataset = source_metrics.get("dataset")
+    if source_dataset != cfg.dataset_name:
+        raise ValueError(
+            f"Oracle source dataset={source_dataset!r} does not match "
+            f"{cfg.dataset_name!r}"
+        )
+    source_config = source_metrics.get("config")
+    if not isinstance(source_config, Mapping):
+        raise ValueError("Oracle source metrics are missing resolved config")
+    fields = (
+        "dataset_name",
+        "model_name",
+        "prompt_template",
+        "adapter_rank",
+        "adapter_alpha",
+        "adapter_type",
+        "lora_rank",
+        "lora_alpha",
+        "lora_layers",
+        "lora_targets",
+        "train_logit_scale",
+        "precision",
+        "gradient_checkpointing",
+        "batch_size",
+        "gradient_accumulation_steps",
+        "lr",
+        "weight_decay",
+        "seed",
+    )
+    mismatches = {}
+    for field in fields:
+        if field not in source_config:
+            continue
+        source_value = source_config[field]
+        current_value = getattr(cfg, field)
+        if field == "lora_targets":
+            source_value = tuple(source_value)
+            current_value = tuple(current_value)
+        if source_value != current_value:
+            mismatches[field] = (source_value, current_value)
+    if mismatches:
+        raise ValueError(
+            f"Oracle config differs from source fine-tuning run: {mismatches}"
+        )
+    expected_hash = source_metrics.get("base_checkpoint_sha256")
+    if expected_hash and expected_hash != initial_checkpoint_sha256:
+        raise ValueError(
+            "Oracle initial checkpoint hash does not match source metrics"
+        )
+
+
+def resolve_training_plan(
+    *,
+    loader_batches: int,
+    gradient_accumulation_steps: int,
+    epochs: int,
+    max_train_steps: int,
+    target_optimizer_steps: int | None,
+    target_scheduler_steps: int | None,
+) -> tuple[int, int, int, int]:
+    if loader_batches < 1:
+        raise ValueError("Training loader must contain at least one batch")
+    updates_per_epoch = math.ceil(
+        loader_batches / gradient_accumulation_steps
+    )
+    natural_total_steps = epochs * updates_per_epoch
+    target_steps = (
+        target_optimizer_steps
+        if target_optimizer_steps is not None
+        else natural_total_steps
+    )
+    if max_train_steps > 0:
+        target_steps = min(target_steps, max_train_steps)
+    scheduler_steps = (
+        target_scheduler_steps
+        if target_scheduler_steps is not None
+        else natural_total_steps
+    )
+    if scheduler_steps < target_steps:
+        raise ValueError(
+            "Scheduler steps cannot be smaller than optimizer steps"
+        )
+    epochs_to_run = (
+        math.ceil(target_steps / updates_per_epoch)
+        if target_optimizer_steps is not None
+        else epochs
+    )
+    return updates_per_epoch, target_steps, scheduler_steps, epochs_to_run
+
+
+def _validate_loaded_model_config(
+    model: LightweightVLM,
+    requested: ModelConfig,
+) -> None:
+    fields = (
+        "model_name",
+        "adapter_type",
+        "adapter_rank",
+        "adapter_alpha",
+        "lora_rank",
+        "lora_alpha",
+        "lora_layers",
+        "lora_targets",
+        "train_logit_scale",
+        "precision",
+        "gradient_checkpointing",
+    )
+    mismatches = {}
+    for field in fields:
+        actual = getattr(model.cfg, field)
+        expected = getattr(requested, field)
+        if field == "lora_targets":
+            actual = tuple(actual)
+            expected = tuple(expected)
+        if actual != expected:
+            mismatches[field] = (actual, expected)
+    if mismatches:
+        raise ValueError(
+            f"Initial checkpoint architecture does not match config: "
+            f"{mismatches}"
+        )
 
 
 def _evaluate_all(
@@ -108,6 +349,7 @@ def _evaluate_all(
 def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
     if cfg.gradient_accumulation_steps < 1:
         raise ValueError("gradient_accumulation_steps must be at least 1")
+    _validate_training_mode(cfg)
     run_started = time.perf_counter()
     set_seed(cfg.seed)
     device = get_device(cfg.device)
@@ -120,14 +362,27 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     metrics_dir.mkdir(parents=True, exist_ok=True)
 
+    split, dataset_spec, class_names = load_split_metadata(
+        cfg.split_path, cfg.dataset_name
+    )
+    initial_checkpoint_sha256 = None
+    source_metrics: Dict[str, Any] | None = None
+    if cfg.training_mode == "retrain_oracle":
+        validate_retraining_split(split)
+        if cfg.source_metrics_path is None or cfg.initial_checkpoint is None:
+            raise RuntimeError("Oracle source artifacts are missing")
+        source_metrics = load_json(cfg.source_metrics_path)
+        resolve_oracle_schedule(source_metrics)
+        initial_checkpoint_sha256 = _file_sha256(cfg.initial_checkpoint)
+        validate_oracle_source_config(
+            cfg, source_metrics, initial_checkpoint_sha256
+        )
+
     image_processor = CLIPImageProcessor.from_pretrained(
         cfg.model_name, local_files_only=cfg.local_files_only
     )
     tokenizer = CLIPTokenizer.from_pretrained(
         cfg.model_name, local_files_only=cfg.local_files_only
-    )
-    _, dataset_spec, class_names = load_split_metadata(
-        cfg.split_path, cfg.dataset_name
     )
     class_text_inputs = build_text_inputs(
         tokenizer,
@@ -161,7 +416,24 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
         local_files_only=cfg.local_files_only,
     )
 
-    model = LightweightVLM.from_config(model_cfg).to(device)
+    initial_checkpoint_metadata: Dict[str, Any] | None = None
+    if cfg.initial_checkpoint:
+        model, initial_checkpoint_metadata = load_checkpoint(
+            cfg.initial_checkpoint, map_location=device
+        )
+        validate_checkpoint_dataset(
+            initial_checkpoint_metadata,
+            dataset_spec.name,
+            cfg.initial_checkpoint,
+        )
+        _validate_loaded_model_config(model, model_cfg)
+        if initial_checkpoint_sha256 is None:
+            initial_checkpoint_sha256 = _file_sha256(
+                cfg.initial_checkpoint
+            )
+        model = model.to(device)
+    else:
+        model = LightweightVLM.from_config(model_cfg).to(device)
     setup_seconds = time.perf_counter() - run_started
 
     model.clip.eval()
@@ -177,30 +449,63 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
 
+    initial_checkpoint_name = (
+        "oracle_init.pt"
+        if cfg.training_mode == "retrain_oracle"
+        else "base_init.pt"
+    )
+    initial_output_path = ckpt_dir / initial_checkpoint_name
     save_checkpoint(
-        str(ckpt_dir / "base_init.pt"),
+        str(initial_output_path),
         model,
         extra={
-            "stage": "base_init",
-            "note": "randomly initialized adapters",
+            "stage": (
+                "retrain_oracle_init"
+                if cfg.training_mode == "retrain_oracle"
+                else "base_init"
+            ),
+            "note": (
+                "restored original adapter initialization"
+                if cfg.initial_checkpoint
+                else "randomly initialized adapters"
+            ),
             "dataset": dataset_spec.name,
             "class_names": class_names,
             "architecture": model.architecture_summary(),
             "provenance": provenance,
             "training_config": resolved_config,
             "smoke_mode": cfg.smoke_mode,
+            "source_initial_checkpoint": cfg.initial_checkpoint,
+            "source_initial_checkpoint_sha256": initial_checkpoint_sha256,
         },
     )
+    initial_output_sha256 = _file_sha256(initial_output_path)
 
     optimizer = AdamW(model.trainable_parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
-    updates_per_epoch = math.ceil(
-        len(loaders["finetune_train"]) / cfg.gradient_accumulation_steps
+    train_loader = loaders[cfg.train_loader_key]
+    (
+        updates_per_epoch,
+        target_steps,
+        scheduler_total_steps,
+        epochs_to_run,
+    ) = resolve_training_plan(
+        loader_batches=len(train_loader),
+        gradient_accumulation_steps=cfg.gradient_accumulation_steps,
+        epochs=cfg.epochs,
+        max_train_steps=cfg.max_train_steps,
+        target_optimizer_steps=cfg.target_optimizer_steps,
+        target_scheduler_steps=cfg.target_scheduler_steps,
     )
-    total_steps = cfg.epochs * max(1, updates_per_epoch)
-    scheduler = CosineAnnealingLR(optimizer, T_max=max(1, total_steps))
+    scheduler = CosineAnnealingLR(
+        optimizer, T_max=max(1, scheduler_total_steps)
+    )
 
     best_metric = -1.0
-    best_path = ckpt_dir / "finetuned_best.pt"
+    best_path = ckpt_dir / (
+        "retrained_best.pt"
+        if cfg.training_mode == "retrain_oracle"
+        else "finetuned_best.pt"
+    )
     global_step = 0
     processed_examples = 0
     gradient_parameter_count = 0
@@ -210,13 +515,16 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
     show_progress = os.environ.get("UNML_TQDM", "0") == "1"
     final_metrics: Dict[str, float] | None = None
 
-    for epoch in range(cfg.epochs):
+    for epoch in range(epochs_to_run):
         model.set_train_mode()
         epoch_losses = []
         optimization_started = time.perf_counter()
         progress = tqdm(
-            loaders["finetune_train"],
-            desc=f"finetune epoch {epoch+1}/{cfg.epochs}",
+            train_loader,
+            desc=(
+                f"{cfg.training_mode} epoch "
+                f"{epoch+1}/{epochs_to_run}"
+            ),
             disable=not show_progress,
         )
         optimizer.zero_grad(set_to_none=True)
@@ -253,7 +561,7 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
                 )
             should_step = (
                 (batch_index + 1) % cfg.gradient_accumulation_steps == 0
-                or batch_index + 1 == len(loaders["finetune_train"])
+                or batch_index + 1 == len(train_loader)
             )
             if should_step:
                 torch.nn.utils.clip_grad_norm_(
@@ -269,14 +577,15 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
                 progress.set_postfix(loss=f"{tensor_to_float(loss):.4f}", step=global_step)
             elif should_step and global_step % 25 == 0:
                 print(
-                    f"[finetune] epoch={epoch + 1} step={global_step} loss={tensor_to_float(loss):.4f}",
+                    f"[{cfg.training_mode}] epoch={epoch + 1} "
+                    f"step={global_step} "
+                    f"loss={tensor_to_float(loss):.4f}",
                     flush=True,
                 )
 
             if (
                 should_step
-                and cfg.max_train_steps > 0
-                and global_step >= cfg.max_train_steps
+                and global_step >= target_steps
             ):
                 break
         optimization_seconds += time.perf_counter() - optimization_started
@@ -294,7 +603,10 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
         final_metrics = eval_metrics
         epoch_loss = sum(epoch_losses) / max(1, len(epoch_losses))
         full_metrics = {"epoch": float(epoch + 1), "train_loss": epoch_loss, **eval_metrics}
-        print(f"[finetune] {format_metrics(full_metrics)}", flush=True)
+        print(
+            f"[{cfg.training_mode}] {format_metrics(full_metrics)}",
+            flush=True,
+        )
 
         log_finetune_epoch(cfg.__dict__, epoch + 1, epoch_loss, eval_metrics)
 
@@ -304,7 +616,11 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
                 str(best_path),
                 model,
                 extra={
-                    "stage": "finetuned",
+                    "stage": (
+                        "retrained_oracle"
+                        if cfg.training_mode == "retrain_oracle"
+                        else "finetuned"
+                    ),
                     "epoch": epoch + 1,
                     "dataset": dataset_spec.name,
                     "class_names": class_names,
@@ -312,11 +628,16 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
                     "provenance": provenance,
                     "training_config": resolved_config,
                     "smoke_mode": cfg.smoke_mode,
+                    "source_initial_checkpoint": cfg.initial_checkpoint,
+                    "source_initial_checkpoint_sha256": (
+                        initial_checkpoint_sha256
+                    ),
+                    "source_metrics_path": cfg.source_metrics_path,
                     "metrics": eval_metrics,
                 },
             )
 
-        if cfg.max_train_steps > 0 and global_step >= cfg.max_train_steps:
+        if global_step >= target_steps:
             break
 
     training_seconds = time.perf_counter() - training_started
@@ -354,6 +675,11 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
             cfg.prefetch_factor if cfg.num_workers > 0 else None
         ),
         "non_blocking": cfg.non_blocking,
+        "train_loader_key": cfg.train_loader_key,
+        "train_examples": len(train_loader.dataset),
+        "updates_per_epoch": updates_per_epoch,
+        "target_optimizer_steps": target_steps,
+        "scheduler_total_steps": scheduler_total_steps,
     }
     if final_metrics is None:
         raise RuntimeError("Fine-tuning completed without an evaluation snapshot")
@@ -368,7 +694,11 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
     }.issubset(checkpoint_payload)
     if not checkpoint_payload_verified:
         raise RuntimeError(f"Checkpoint payload verification failed: {best_path}")
-    metrics_path = metrics_dir / "finetune_metrics.json"
+    metrics_path = metrics_dir / (
+        "retrain_metrics.json"
+        if cfg.training_mode == "retrain_oracle"
+        else "finetune_metrics.json"
+    )
     benchmark["total_seconds"] = time.perf_counter() - run_started
     save_json(
         {
@@ -389,14 +719,21 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
             "checkpoint_payload_verified": checkpoint_payload_verified,
             "provenance": provenance,
             "config": resolved_config,
+            "training_mode": cfg.training_mode,
+            "source_metrics_path": cfg.source_metrics_path,
+            "source_initial_checkpoint": cfg.initial_checkpoint,
+            "source_initial_checkpoint_sha256": initial_checkpoint_sha256,
+            "base_checkpoint_sha256": initial_output_sha256,
+            "source_initial_metadata": initial_checkpoint_metadata,
+            "forget_train_overlap_count": 0,
         },
         metrics_path,
     )
 
-    log_finetune_summary(cfg.__dict__, best_metric, cfg.epochs)
+    log_finetune_summary(cfg.__dict__, best_metric, epochs_to_run)
 
     return {
-        "base_checkpoint": str(ckpt_dir / "base_init.pt"),
+        "base_checkpoint": str(initial_output_path),
         "best_checkpoint": str(best_path),
         "metrics_path": str(metrics_path),
         "best_retain_val_acc": best_metric,

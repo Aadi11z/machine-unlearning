@@ -175,6 +175,16 @@ def main() -> None:
         "methods",
         ("retain_only", "ga_kl", "counterfactual_rebind"),
     )
+    retraining_enabled = bool(
+        resolve_section_value(
+            None,
+            runtime_cfg,
+            dataset_name,
+            "retraining",
+            "enabled",
+            False,
+        )
+    )
     seed = resolve_value(args.seed, runtime_cfg, ("experiment", "seed"), 42)
     device = resolve_value(args.device, runtime_cfg, ("experiment", "device"), "auto")
 
@@ -202,6 +212,9 @@ def main() -> None:
         print(f"unlearning_dir={unlearn_dir}")
         print(f"comparison_dir={compare_dir}")
         print(f"methods={','.join(methods)}")
+        print(f"retraining.enabled={retraining_enabled}")
+        if retraining_enabled:
+            print(f"retraining_dir={output_root / 'retrain_oracle'}")
         print(f"training.num_workers={ft_num_workers}")
         print(f"training.pin_memory={ft_pin_memory}")
         print(f"training.persistent_workers={ft_persistent_workers}")
@@ -275,6 +288,45 @@ def main() -> None:
 
     finetuned_ckpt = finetune_dir / "checkpoints" / "finetuned_best.pt"
     base_ckpt = finetune_dir / "checkpoints" / "base_init.pt"
+    oracle_dir = output_root / "retrain_oracle"
+    oracle_ckpt = oracle_dir / "checkpoints" / "retrained_best.pt"
+
+    if retraining_enabled:
+        run_cmd(
+            [
+                sys.executable,
+                str(repo_root / "scripts" / "train_vlm.py"),
+                "--config",
+                args.config,
+                "--oracle",
+                "--data-dir",
+                data_dir,
+                "--dataset",
+                dataset_name,
+                *request_args,
+                "--split-path",
+                split_path,
+                "--output-dir",
+                str(oracle_dir),
+                "--initial-checkpoint",
+                str(base_ckpt),
+                "--source-metrics",
+                str(finetune_dir / "metrics" / "finetune_metrics.json"),
+                "--model-name",
+                model_name,
+                "--batch-size",
+                str(ft_batch_size),
+                "--gradient-accumulation-steps",
+                str(ft_gradient_accumulation_steps),
+                "--num-workers",
+                str(ft_num_workers),
+                "--seed",
+                str(seed),
+                "--device",
+                device,
+            ],
+            env,
+        )
 
     for method in methods:
         run_cmd(
@@ -316,6 +368,10 @@ def main() -> None:
         "--candidate",
         f"finetuned={finetuned_ckpt}",
     ]
+    if retraining_enabled:
+        candidate_args.extend(
+            ["--candidate", f"retrain_oracle={oracle_ckpt}"]
+        )
     for method in methods:
         candidate_args.extend(
             [

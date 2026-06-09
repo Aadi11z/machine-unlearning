@@ -183,6 +183,22 @@ def test_parameters_yaml_switches_complete_dataset_profile(monkeypatch) -> None:
         "methods",
         (),
     )
+    assert resolve_section_value(
+        None,
+        payload,
+        dataset_name,
+        "retraining",
+        "enabled",
+        False,
+    )
+    assert not resolve_section_value(
+        None,
+        payload,
+        "cifar10",
+        "retraining",
+        "enabled",
+        False,
+    )
 
 
 def test_sharanga_environment_redirects_heavy_artifacts(monkeypatch) -> None:

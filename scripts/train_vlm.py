@@ -26,6 +26,7 @@ from unml.config import (
     resolve_value,
 )
 from unml.utils import transformers_offline
+from unml.utils import load_json
 
 
 def parse_args() -> argparse.Namespace:
@@ -40,6 +41,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--request", type=str, default=None)
     parser.add_argument("--split-path", type=str, default=None)
     parser.add_argument("--output-dir", type=str, default=None)
+    parser.add_argument(
+        "--oracle",
+        action="store_true",
+        help=(
+            "Retrain from the original adapter initialization using only "
+            "retain_train and the source optimizer schedule"
+        ),
+    )
+    parser.add_argument("--initial-checkpoint", type=str, default=None)
+    parser.add_argument("--source-metrics", type=str, default=None)
+    parser.add_argument("--target-optimizer-steps", type=int, default=None)
+    parser.add_argument("--target-scheduler-steps", type=int, default=None)
 
     parser.add_argument("--model-name", type=str, default=None)
     parser.add_argument("--prompt-template", type=str, default=None)
@@ -127,6 +140,8 @@ def main() -> None:
     dataset_name, split_path = resolve_dataset_and_split_path(
         args.dataset, args.split_path, runtime_cfg, args.request
     )
+    if args.oracle and args.smoke:
+        raise ValueError("--oracle and --smoke cannot be combined")
     lora_targets = resolve_model_value(
         args.lora_targets,
         runtime_cfg,
@@ -138,12 +153,21 @@ def main() -> None:
         lora_targets = [
             target.strip() for target in lora_targets.split(",") if target.strip()
         ]
-    default_output_dir = resolve_stage_output_dir(
-        args.output_dir,
+    training_output_dir = resolve_stage_output_dir(
+        None,
         runtime_cfg,
         dataset_name,
         "training",
         args.request,
+    )
+    default_output_dir = (
+        Path(args.output_dir)
+        if args.output_dir
+        else (
+            training_output_dir.parent / "retrain_oracle"
+            if args.oracle
+            else training_output_dir
+        )
     )
     if args.smoke and args.output_dir is None:
         default_output_dir = default_output_dir.parent / "phase2_benchmark"
@@ -158,7 +182,45 @@ def main() -> None:
         None, runtime_cfg, ("training", "smoke", "max_eval_batches"), 2
     )
 
-    from unml.train import FineTuneConfig, run_finetuning
+    from unml.train import (
+        FineTuneConfig,
+        resolve_oracle_schedule,
+        run_finetuning,
+    )
+
+    initial_checkpoint = None
+    source_metrics_path = None
+    target_optimizer_steps = None
+    target_scheduler_steps = None
+    if args.oracle:
+        initial_checkpoint = resolve_value(
+            args.initial_checkpoint,
+            runtime_cfg,
+            ("retraining", "initial_checkpoint"),
+            str(training_output_dir / "checkpoints" / "base_init.pt"),
+        )
+        source_metrics_path = resolve_value(
+            args.source_metrics,
+            runtime_cfg,
+            ("retraining", "source_metrics"),
+            str(training_output_dir / "metrics" / "finetune_metrics.json"),
+        )
+        source_metrics = load_json(source_metrics_path)
+        source_optimizer_steps, source_scheduler_steps = (
+            resolve_oracle_schedule(source_metrics)
+        )
+        target_optimizer_steps = resolve_value(
+            args.target_optimizer_steps,
+            runtime_cfg,
+            ("retraining", "target_optimizer_steps"),
+            source_optimizer_steps,
+        )
+        target_scheduler_steps = resolve_value(
+            args.target_scheduler_steps,
+            runtime_cfg,
+            ("retraining", "target_scheduler_steps"),
+            source_scheduler_steps,
+        )
 
     cfg = FineTuneConfig(
         data_dir=str(resolve_data_dir(args.data_dir, runtime_cfg)),
@@ -305,6 +367,12 @@ def main() -> None:
             else smoke_eval_batches if args.smoke else None
         ),
         smoke_mode=args.smoke,
+        training_mode="retrain_oracle" if args.oracle else "finetune",
+        train_loader_key="retain_train" if args.oracle else "finetune_train",
+        initial_checkpoint=initial_checkpoint,
+        source_metrics_path=source_metrics_path,
+        target_optimizer_steps=target_optimizer_steps,
+        target_scheduler_steps=target_scheduler_steps,
     )
     result = run_finetuning(cfg)
     print(result)

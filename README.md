@@ -28,6 +28,7 @@ research hypothesis until the configured GPU experiments are complete.
 - `src/unml/probe.py`: sample- and class-level checkpoint inspection
 - `scripts/*.py`: CLI entrypoints
 - `scripts/run_pipeline.py`: full experiment orchestration
+- `scripts/retrain_oracle.py`: retained-data retraining reference
 
 
 ## Tests
@@ -70,6 +71,12 @@ Its unlearning profile runs the four historical baselines plus `h_tgsd` and
 `h_tgsd_no_sibling_preservation`. CIFAR-10 keeps the historical four-method
 matrix.
 
+The CIFAR-100 profile also enables an exact retained-data retraining oracle.
+After fine-tuning, the pipeline reloads the recorded `base_init.pt`, trains
+only on `retain_train`, and matches the source seed, architecture, optimizer,
+precision, batch/accumulation, optimizer-step count, and cosine schedule.
+Source configuration and checkpoint hashes are validated before model startup.
+
 For CIFAR-100, select the deletion request in the same profile:
 
 ```yaml
@@ -94,6 +101,15 @@ Run the complete configured pipeline:
 ```bash
 python scripts/run_pipeline.py
 ```
+
+Run only the oracle after a completed fine-tuning run:
+
+```bash
+python scripts/retrain_oracle.py --offline --device cuda
+```
+
+Oracle artifacts are isolated under `retrain_oracle/` and are automatically
+included in CIFAR-100 attack evaluation and checkpoint probes.
 
 Before requesting a GPU on Sharanga, populate and verify the Hugging Face
 cache on the login node:

@@ -95,6 +95,25 @@ def main() -> None:
         checkpoints.append(
             str(training_output_dir / "checkpoints" / "finetuned_best.pt")
         )
+        if bool(
+            resolve_section_value(
+                None,
+                runtime_cfg,
+                dataset_name,
+                "retraining",
+                "enabled",
+                False,
+            )
+        ):
+            names.append("retrain_oracle")
+            checkpoints.append(
+                str(
+                    training_output_dir.parent
+                    / "retrain_oracle"
+                    / "checkpoints"
+                    / "retrained_best.pt"
+                )
+            )
         for method in methods:
             names.append(method)
             checkpoints.append(

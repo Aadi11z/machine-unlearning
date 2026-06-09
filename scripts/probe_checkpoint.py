@@ -23,6 +23,7 @@ from unml.config import (
     resolve_model_value,
     resolve_output_root,
     resolve_section_str_list,
+    resolve_section_value,
     resolve_stage_output_dir,
     resolve_value,
 )
@@ -91,6 +92,25 @@ def main() -> None:
             candidate_names.append(name)
             candidate_checkpoints.append(checkpoint)
     else:
+        if bool(
+            resolve_section_value(
+                None,
+                runtime_cfg,
+                dataset,
+                "retraining",
+                "enabled",
+                False,
+            )
+        ):
+            candidate_names.append("retrain_oracle")
+            candidate_checkpoints.append(
+                str(
+                    training_dir.parent
+                    / "retrain_oracle"
+                    / "checkpoints"
+                    / "retrained_best.pt"
+                )
+            )
         for method in resolve_section_str_list(
             None,
             runtime_cfg,

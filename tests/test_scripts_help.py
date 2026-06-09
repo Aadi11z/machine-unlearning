@@ -11,6 +11,7 @@ SCRIPTS = [
     "scripts/cache_model.py",
     "scripts/benchmark_runtime.py",
     "scripts/probe_checkpoint.py",
+    "scripts/retrain_oracle.py",
     "scripts/prepare_data.py",
     "scripts/train_vlm.py",
     "scripts/run_unlearning.py",
@@ -62,6 +63,11 @@ def test_pipeline_cifar100_selects_vit_b16_vision_lora() -> None:
     assert proc.returncode == 0
     assert "model_name=openai/clip-vit-base-patch16" in proc.stdout
     assert "adapter_type=vision_lora" in proc.stdout
+    assert "retraining.enabled=True" in proc.stdout
+    assert (
+        "retraining_dir=outputs/cifar100/flowers_superclass/retrain_oracle"
+        in proc.stdout
+    )
 
 
 def test_runtime_benchmark_show_commands_is_non_executing() -> None:

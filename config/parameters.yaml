@@ -81,6 +81,18 @@ training:
     max_train_steps: 50
     max_eval_batches: 2
 
+retraining:
+  enabled: false
+  profiles:
+    cifar100:
+      enabled: true
+  # Paths and schedule default to the active request's fine-tuning artifacts.
+  # Override only when comparing against a different recorded source run.
+  initial_checkpoint: null
+  source_metrics: null
+  target_optimizer_steps: null
+  target_scheduler_steps: null
+
 unlearning:
   batch_size: 128
   num_workers: 4
