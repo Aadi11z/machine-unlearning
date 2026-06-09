@@ -20,7 +20,7 @@ from .data import (
     load_split_metadata,
     validate_checkpoint_dataset,
 )
-from .evaluate import evaluate_classification
+from .evaluate import build_class_text_features, evaluate_classification
 from .model import load_checkpoint, precision_context, save_checkpoint
 from helpers.tracker import log_unlearn_run
 from .utils import format_metrics, get_device, save_json, set_seed, tensor_to_float
@@ -83,11 +83,30 @@ def _kl_div(student_logits: torch.Tensor, teacher_logits: torch.Tensor, temperat
 
 
 def _eval_snapshot(model, loaders, class_text_inputs, device: torch.device) -> Dict[str, float]:
-    retain_train = evaluate_classification(model, loaders["retain_train"], class_text_inputs, device)
-    retain_val = evaluate_classification(model, loaders["retain_val"], class_text_inputs, device)
-    forget = evaluate_classification(model, loaders["forget"], class_text_inputs, device)
-    test_retain = evaluate_classification(model, loaders["test_retain"], class_text_inputs, device)
-    test_all = evaluate_classification(model, loaders["test_all"], class_text_inputs, device)
+    model.eval()
+    class_text_features = build_class_text_features(
+        model, class_text_inputs, device
+    )
+    evaluation_args = {
+        "class_text_inputs": class_text_inputs,
+        "device": device,
+        "class_text_features": class_text_features,
+    }
+    retain_train = evaluate_classification(
+        model, loaders["retain_train"], **evaluation_args
+    )
+    retain_val = evaluate_classification(
+        model, loaders["retain_val"], **evaluation_args
+    )
+    forget = evaluate_classification(
+        model, loaders["forget"], **evaluation_args
+    )
+    test_retain = evaluate_classification(
+        model, loaders["test_retain"], **evaluation_args
+    )
+    test_all = evaluate_classification(
+        model, loaders["test_all"], **evaluation_args
+    )
     return {
         "retain_train_acc": retain_train["accuracy"],
         "retain_val_acc": retain_val["accuracy"],
@@ -142,6 +161,14 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
     teacher = copy.deepcopy(model).eval().to(device) # left-to-right chaining, deepcopy doesnt affect original
     for param in teacher.parameters():
         param.requires_grad = False
+    teacher_text_features = build_class_text_features(
+        teacher, class_text_inputs, device
+    )
+    student_text_features = None
+    if model.can_cache_text_features_during_training():
+        student_text_features = build_class_text_features(
+            model, class_text_inputs, device
+        )
 
     optimizer = AdamW(model.trainable_parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
 
@@ -160,28 +187,39 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
         batch_r = next(retain_iter)
         batch_r = {k: v.to(device) for k, v in batch_r.items()}
         with precision_context(model.cfg.precision, device):
-            logits_r = model.class_logits(
-                pixel_values=batch_r["pixel_values"],
-                class_input_ids=class_text_inputs["input_ids"],
-                class_attention_mask=class_text_inputs["attention_mask"],
-            )
+            if student_text_features is None:
+                logits_r = model.class_logits(
+                    pixel_values=batch_r["pixel_values"],
+                    class_input_ids=class_text_inputs["input_ids"],
+                    class_attention_mask=class_text_inputs["attention_mask"],
+                )
+            else:
+                logits_r = model.class_logits_from_text_features(
+                    pixel_values=batch_r["pixel_values"],
+                    class_text_features=student_text_features,
+                )
             if cfg.method == "retain_only":
                 loss = F.cross_entropy(logits_r, batch_r["labels"])
             else:
                 with torch.no_grad():
-                    t_logits_r = teacher.class_logits(
+                    t_logits_r = teacher.class_logits_from_text_features(
                         pixel_values=batch_r["pixel_values"],
-                        class_input_ids=class_text_inputs["input_ids"],
-                        class_attention_mask=class_text_inputs["attention_mask"],
+                        class_text_features=teacher_text_features,
                     )
                 retain_kl = _kl_div(logits_r, t_logits_r, cfg.kl_temperature)
                 batch_f = next(forget_iter)
                 batch_f = {k: v.to(device) for k, v in batch_f.items()}
-                logits_f = model.class_logits(
-                    pixel_values=batch_f["pixel_values"],
-                    class_input_ids=class_text_inputs["input_ids"],
-                    class_attention_mask=class_text_inputs["attention_mask"],
-                )
+                if student_text_features is None:
+                    logits_f = model.class_logits(
+                        pixel_values=batch_f["pixel_values"],
+                        class_input_ids=class_text_inputs["input_ids"],
+                        class_attention_mask=class_text_inputs["attention_mask"],
+                    )
+                else:
+                    logits_f = model.class_logits_from_text_features(
+                        pixel_values=batch_f["pixel_values"],
+                        class_text_features=student_text_features,
+                    )
 
             if cfg.method == "retain_only":
                 pass
@@ -255,6 +293,9 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
             "finetuned_checkpoint": cfg.finetuned_checkpoint,
             "finetune_meta": finetune_meta,
             "architecture": model.architecture_summary(),
+            "cached_student_text_features": (
+                student_text_features is not None
+            ),
             "metrics": summary_metrics,
         },
     )

@@ -132,6 +132,46 @@ def test_full_vision_lora_injects_24_trainable_projections(monkeypatch) -> None:
         name.startswith("clip.text_model") for name in trainable_names
     )
     assert not any(".base_layer." in name for name in trainable_names)
+    assert model.can_cache_text_features_during_training()
+
+
+def test_post_projection_adapter_does_not_cache_trainable_text_features(
+    monkeypatch,
+) -> None:
+    _patch_tiny_clip(monkeypatch, num_vision_layers=2)
+    model = LightweightVLM(
+        ModelConfig(
+            model_name="tiny",
+            adapter_type="post_projection",
+        )
+    )
+
+    assert not model.can_cache_text_features_during_training()
+
+
+def test_cached_class_text_features_match_direct_class_logits(
+    monkeypatch,
+) -> None:
+    _patch_tiny_clip(monkeypatch, num_vision_layers=2)
+    model = LightweightVLM(
+        ModelConfig(
+            model_name="tiny",
+            adapter_type="vision_lora",
+            lora_layers="all",
+        )
+    ).eval()
+    pixels = torch.randn(2, 3, 32, 32)
+    input_ids = torch.randint(0, 100, (5, 8))
+    attention_mask = torch.ones_like(input_ids)
+
+    with torch.no_grad():
+        text_features = model.encode_text(input_ids, attention_mask)
+        direct = model.class_logits(pixels, input_ids, attention_mask)
+        cached = model.class_logits_from_text_features(
+            pixels, text_features
+        )
+
+    assert torch.allclose(direct, cached)
 
 
 def test_vision_lora_exposes_global_and_patch_features(monkeypatch) -> None:

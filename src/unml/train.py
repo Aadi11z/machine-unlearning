@@ -15,7 +15,7 @@ from tqdm import tqdm
 from transformers import CLIPImageProcessor, CLIPTokenizer
 
 from .data import build_loaders, build_text_inputs, load_split_metadata
-from .evaluate import evaluate_classification
+from .evaluate import build_class_text_features, evaluate_classification
 from .model import ModelConfig, LightweightVLM, precision_context, save_checkpoint
 from helpers.tracker import log_finetune_epoch, log_finetune_summary
 from .utils import format_metrics, get_device, save_json, set_seed, tensor_to_float
@@ -51,10 +51,27 @@ class FineTuneConfig:
 
 
 def _evaluate_all(model, loaders, class_text_inputs, device: torch.device) -> Dict[str, float]:
-    retain_val = evaluate_classification(model, loaders["retain_val"], class_text_inputs, device)
-    test_all = evaluate_classification(model, loaders["test_all"], class_text_inputs, device)
-    test_retain = evaluate_classification(model, loaders["test_retain"], class_text_inputs, device)
-    forget_train = evaluate_classification(model, loaders["forget"], class_text_inputs, device)
+    model.eval()
+    class_text_features = build_class_text_features(
+        model, class_text_inputs, device
+    )
+    evaluation_args = {
+        "class_text_inputs": class_text_inputs,
+        "device": device,
+        "class_text_features": class_text_features,
+    }
+    retain_val = evaluate_classification(
+        model, loaders["retain_val"], **evaluation_args
+    )
+    test_all = evaluate_classification(
+        model, loaders["test_all"], **evaluation_args
+    )
+    test_retain = evaluate_classification(
+        model, loaders["test_retain"], **evaluation_args
+    )
+    forget_train = evaluate_classification(
+        model, loaders["forget"], **evaluation_args
+    )
     return {
         "retain_val_acc": retain_val["accuracy"],
         "retain_val_loss": retain_val["loss"],
@@ -112,6 +129,15 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
     model = LightweightVLM.from_config(model_cfg).to(device)
 
     model.clip.eval()
+    class_text_inputs = {
+        key: value.to(device) for key, value in class_text_inputs.items()
+    }
+    cached_train_text_features = None
+    if model.can_cache_text_features_during_training():
+        model.eval()
+        cached_train_text_features = build_class_text_features(
+            model, class_text_inputs, device
+        )
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
 
@@ -140,6 +166,7 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
     processed_examples = 0
     training_started = time.perf_counter()
     show_progress = os.environ.get("UNML_TQDM", "0") == "1"
+    final_metrics: Dict[str, float] | None = None
 
     for epoch in range(cfg.epochs):
         model.set_train_mode()
@@ -154,11 +181,17 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
             batch = {k: v.to(device) for k, v in batch.items()}
             processed_examples += int(batch["labels"].numel())
             with precision_context(cfg.precision, device):
-                logits = model.class_logits(
-                    pixel_values=batch["pixel_values"],
-                    class_input_ids=class_text_inputs["input_ids"].to(device),
-                    class_attention_mask=class_text_inputs["attention_mask"].to(device),
-                )
+                if cached_train_text_features is None:
+                    logits = model.class_logits(
+                        pixel_values=batch["pixel_values"],
+                        class_input_ids=class_text_inputs["input_ids"],
+                        class_attention_mask=class_text_inputs["attention_mask"],
+                    )
+                else:
+                    logits = model.class_logits_from_text_features(
+                        pixel_values=batch["pixel_values"],
+                        class_text_features=cached_train_text_features,
+                    )
                 loss = F.cross_entropy(logits, batch["labels"])
 
             (loss / cfg.gradient_accumulation_steps).backward()
@@ -192,6 +225,7 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
                 break
 
         eval_metrics = _evaluate_all(model, loaders, class_text_inputs, device)
+        final_metrics = eval_metrics
         epoch_loss = sum(epoch_losses) / max(1, len(epoch_losses))
         full_metrics = {"epoch": float(epoch + 1), "train_loss": epoch_loss, **eval_metrics}
         print(f"[finetune] {format_metrics(full_metrics)}", flush=True)
@@ -237,17 +271,21 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
         "device": str(device),
         "precision": cfg.precision,
     }
-    best_model_metrics = _evaluate_all(model, loaders, class_text_inputs, device)
+    if final_metrics is None:
+        raise RuntimeError("Fine-tuning completed without an evaluation snapshot")
     metrics_path = metrics_dir / "finetune_metrics.json"
     save_json(
         {
             "best_retain_val_acc": best_metric,
-            "final_metrics": best_model_metrics,
+            "final_metrics": final_metrics,
             "global_steps": global_step,
             "dataset": dataset_spec.name,
             "class_names": class_names,
             "architecture": model.architecture_summary(),
             "benchmark": benchmark,
+            "cached_train_text_features": (
+                cached_train_text_features is not None
+            ),
         },
         metrics_path,
     )

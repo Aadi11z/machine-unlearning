@@ -18,7 +18,11 @@ from .data import (
     load_split_metadata,
     validate_checkpoint_dataset,
 )
-from .evaluate import collect_true_class_confidences, evaluate_classification
+from .evaluate import (
+    build_class_text_features,
+    collect_true_class_confidences,
+    evaluate_classification,
+)
 from .model import load_checkpoint
 from helpers.tracker import update_unlearn_with_attacks
 from .utils import get_device
@@ -86,9 +90,26 @@ def _mia_metrics(member_current: np.ndarray, nonmember_current: np.ndarray, memb
 
 
 def _evaluate_model(model, base_model, loaders: Dict[str, DataLoader], class_text_inputs: Dict[str, torch.Tensor], device: torch.device, max_attack_samples: int) -> Dict[str, float]:
-    util_test_all = evaluate_classification(model, loaders["test_all"], class_text_inputs, device)
-    util_test_retain = evaluate_classification(model, loaders["test_retain"], class_text_inputs, device)
-    forget_train = evaluate_classification(model, loaders["forget"], class_text_inputs, device)
+    model_text_features = build_class_text_features(
+        model, class_text_inputs, device
+    )
+    base_text_features = build_class_text_features(
+        base_model, class_text_inputs, device
+    )
+    model_eval_args = {
+        "class_text_inputs": class_text_inputs,
+        "device": device,
+        "class_text_features": model_text_features,
+    }
+    util_test_all = evaluate_classification(
+        model, loaders["test_all"], **model_eval_args
+    )
+    util_test_retain = evaluate_classification(
+        model, loaders["test_retain"], **model_eval_args
+    )
+    forget_train = evaluate_classification(
+        model, loaders["forget"], **model_eval_args
+    )
 
     member = collect_true_class_confidences(
         model,
@@ -96,6 +117,7 @@ def _evaluate_model(model, base_model, loaders: Dict[str, DataLoader], class_tex
         class_text_inputs,
         device,
         max_samples=max_attack_samples,
+        class_text_features=model_text_features,
     )
     nonmember = collect_true_class_confidences(
         model,
@@ -103,6 +125,7 @@ def _evaluate_model(model, base_model, loaders: Dict[str, DataLoader], class_tex
         class_text_inputs,
         device,
         max_samples=max_attack_samples,
+        class_text_features=model_text_features,
     )
 
     member_base = collect_true_class_confidences(
@@ -111,6 +134,7 @@ def _evaluate_model(model, base_model, loaders: Dict[str, DataLoader], class_tex
         class_text_inputs,
         device,
         max_samples=max_attack_samples,
+        class_text_features=base_text_features,
     )
     nonmember_base = collect_true_class_confidences(
         base_model,
@@ -118,6 +142,7 @@ def _evaluate_model(model, base_model, loaders: Dict[str, DataLoader], class_tex
         class_text_inputs,
         device,
         max_samples=max_attack_samples,
+        class_text_features=base_text_features,
     )
 
     attacks = _mia_metrics(

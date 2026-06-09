@@ -10,10 +10,33 @@ from torch.utils.data import DataLoader
 from .utils import move_to_device, tensor_to_float
 
 
+@torch.no_grad()
+def build_class_text_features(
+    model,
+    class_text_inputs: Dict[str, torch.Tensor],
+    device: torch.device,
+) -> torch.Tensor:
+    return model.encode_text(
+        class_text_inputs["input_ids"].to(device),
+        class_text_inputs["attention_mask"].to(device),
+    )
+
+
 @torch.no_grad() # needed so that Pytorch doesnt build autograd graphs during execution
-def evaluate_classification(model, loader: DataLoader, class_text_inputs: Dict[str, torch.Tensor], device: torch.device, max_batches: int | None = None) -> Dict[str, float]:
+def evaluate_classification(
+    model,
+    loader: DataLoader,
+    class_text_inputs: Dict[str, torch.Tensor],
+    device: torch.device,
+    max_batches: int | None = None,
+    class_text_features: torch.Tensor | None = None,
+) -> Dict[str, float]:
     # Performs supervised eval
     model.eval()
+    if class_text_features is None:
+        class_text_features = build_class_text_features(
+            model, class_text_inputs, device
+        )
     total = 0
     correct = 0
     losses = []
@@ -22,10 +45,9 @@ def evaluate_classification(model, loader: DataLoader, class_text_inputs: Dict[s
             # if you want early stopping, declare max_batches
             break
         batch = move_to_device(batch, device)
-        logits = model.class_logits(
+        logits = model.class_logits_from_text_features(
             pixel_values=batch["pixel_values"],
-            class_input_ids=class_text_inputs["input_ids"].to(device),
-            class_attention_mask=class_text_inputs["attention_mask"].to(device),
+            class_text_features=class_text_features,
         )
         labels = batch["labels"]
         loss = F.cross_entropy(logits, labels) # Per-Batch loss computation
@@ -44,17 +66,27 @@ def evaluate_classification(model, loader: DataLoader, class_text_inputs: Dict[s
 
 
 @torch.no_grad()
-def collect_true_class_confidences(model, loader: DataLoader, class_text_inputs: Dict[str, torch.Tensor], device: torch.device, max_samples: int | None = None):
+def collect_true_class_confidences(
+    model,
+    loader: DataLoader,
+    class_text_inputs: Dict[str, torch.Tensor],
+    device: torch.device,
+    max_samples: int | None = None,
+    class_text_features: torch.Tensor | None = None,
+):
     model.eval()
+    if class_text_features is None:
+        class_text_features = build_class_text_features(
+            model, class_text_inputs, device
+        )
     scores = []
     labels_all = []
     indices_all = []
     for batch in loader:
         batch = move_to_device(batch, device)
-        logits = model.class_logits(
+        logits = model.class_logits_from_text_features(
             pixel_values=batch["pixel_values"],
-            class_input_ids=class_text_inputs["input_ids"].to(device),
-            class_attention_mask=class_text_inputs["attention_mask"].to(device),
+            class_text_features=class_text_features,
         )
         probs = logits.softmax(dim=-1)
         labels = batch["labels"]

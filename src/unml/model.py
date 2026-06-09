@@ -240,6 +240,16 @@ class LightweightVLM(nn.Module):
     def configure_for_unlearning(self, train_logit_scale: bool) -> None:
         self.logit_scale.requires_grad = train_logit_scale
 
+    def can_cache_text_features_during_training(self) -> bool:
+        return not any(
+            param.requires_grad
+            for param in (
+                *self.clip.text_model.parameters(),
+                *self.clip.text_projection.parameters(),
+                *self.text_adapter.parameters(),
+            )
+        )
+
     def encode_images(
         self, pixel_values: torch.Tensor, return_patch_tokens: bool = False
     ) -> torch.Tensor | Tuple[torch.Tensor, torch.Tensor]:
@@ -278,6 +288,14 @@ class LightweightVLM(nn.Module):
     ) -> torch.Tensor:
         scale = self.logit_scale.exp().clamp(max=100)
         return scale * image_features @ text_features.t()
+
+    def class_logits_from_text_features(
+        self,
+        pixel_values: torch.Tensor,
+        class_text_features: torch.Tensor,
+    ) -> torch.Tensor:
+        image_features = self.encode_images(pixel_values)
+        return self.logits_from_embeddings(image_features, class_text_features)
 
     def class_logits(
         self,
