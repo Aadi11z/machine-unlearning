@@ -21,9 +21,9 @@ from unml.config import (
     resolve_data_dir,
     resolve_dataset_and_split_path,
     resolve_model_value,
+    resolve_section_str_list,
     resolve_section_value,
     resolve_stage_output_dir,
-    resolve_str_list,
     resolve_value,
 )
 
@@ -83,10 +83,12 @@ def main() -> None:
         unlearning_output_dir = resolve_stage_output_dir(
             None, runtime_cfg, dataset_name, "unlearning", args.request
         )
-        methods = resolve_str_list(
+        methods = resolve_section_str_list(
             None,
             runtime_cfg,
-            ("unlearning", "methods"),
+            dataset_name,
+            "unlearning",
+            "methods",
             ("retain_only", "ga_kl", "counterfactual_rebind"),
         )
         names.append("finetuned")

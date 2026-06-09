@@ -9,8 +9,13 @@ End-to-end project for machine unlearning on a lightweight vision-language model
 ## Why this is novel
 This project includes a new unlearning objective:
 - `counterfactual_rebind`: for forget samples, the model is pushed toward counterfactual class prompts while preserving retain behavior through KL-to-teacher regularization.
+- `h_tgsd`: Hierarchical Text-Guided Semantic Disentanglement suppresses a
+  teacher-derived target semantic subspace while preserving unrelated and
+  sibling-class predictions and representations.
 
 This creates a controllable forgetting mechanism that is stronger than retain-only fine-tuning while preserving utility better than unconstrained gradient ascent.
+H-TGSD is implemented and unit-tested, but its CIFAR-100 advantage remains a
+research hypothesis until the configured GPU experiments are complete.
 
 ## Project structure
 - `src/unml/data.py`: dataset pull + split creation + dataloaders
@@ -18,6 +23,7 @@ This creates a controllable forgetting mechanism that is stronger than retain-on
   internal vision LoRA
 - `src/unml/train.py`: finetuning pipeline
 - `src/unml/unlearn.py`: unlearning methods
+- `src/unml/disentangle.py`: H-TGSD prototype, basis, and loss functions
 - `src/unml/attacks.py`: membership-inference attacks + tradeoff plot/report
 - `src/unml/probe.py`: sample- and class-level checkpoint inspection
 - `scripts/*.py`: CLI entrypoints
@@ -59,6 +65,10 @@ The same switch selects the model architecture:
 The CIFAR-100 profile keeps the text encoder and original CLIP weights frozen,
 uses BF16 and vision gradient checkpointing, and trains with batch size 64 plus
 two-step accumulation for effective batch size 128.
+
+Its unlearning profile runs the four historical baselines plus `h_tgsd` and
+`h_tgsd_no_sibling_preservation`. CIFAR-10 keeps the historical four-method
+matrix.
 
 For CIFAR-100, select the deletion request in the same profile:
 
@@ -187,6 +197,12 @@ outputs produce:
 Delta-MIA scores are aligned by dataset index before subtraction, so shuffled
 forget loaders cannot compare different samples. Base-model outputs are
 computed once and reused across all candidate checkpoints.
+
+H-TGSD builds configurable text/image class directions from the fine-tuned
+teacher. Complete-superclass requests suppress the flower basis. Selective
+requests suppress the target residual orthogonal to the sibling basis while
+preserving shared target/sibling coordinates. Basis tensors, prototype counts,
+ranks, and component losses are saved with the unlearning artifacts.
 
 Manually inspect selected examples across the fine-tuned reference and
 unlearned checkpoints:

@@ -20,8 +20,8 @@ from unml.config import (
     resolve_model_value,
     resolve_output_root,
     resolve_request_name,
+    resolve_section_str_list,
     resolve_section_value,
-    resolve_str_list,
     resolve_value,
 )
 
@@ -167,10 +167,12 @@ def main() -> None:
     ft_non_blocking = resolve_section_value(
         None, runtime_cfg, dataset_name, "training", "non_blocking", False
     )
-    methods = resolve_str_list(
+    methods = resolve_section_str_list(
         args.methods,
         runtime_cfg,
-        ("unlearning", "methods"),
+        dataset_name,
+        "unlearning",
+        "methods",
         ("retain_only", "ga_kl", "counterfactual_rebind"),
     )
     seed = resolve_value(args.seed, runtime_cfg, ("experiment", "seed"), 42)

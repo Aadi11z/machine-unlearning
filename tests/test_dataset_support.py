@@ -15,6 +15,7 @@ from unml.config import (
     resolve_forget_classes,
     resolve_model_value,
     resolve_output_root,
+    resolve_section_str_list,
     resolve_section_value,
     resolve_stage_output_dir,
 )
@@ -163,6 +164,24 @@ def test_parameters_yaml_switches_complete_dataset_profile(monkeypatch) -> None:
             1,
         )
         == 2
+    )
+    cifar100_methods = resolve_section_str_list(
+        None,
+        payload,
+        dataset_name,
+        "unlearning",
+        "methods",
+        (),
+    )
+    assert "h_tgsd" in cifar100_methods
+    assert "h_tgsd_no_sibling_preservation" in cifar100_methods
+    assert "h_tgsd" not in resolve_section_str_list(
+        None,
+        payload,
+        "cifar10",
+        "unlearning",
+        "methods",
+        (),
     )
 
 

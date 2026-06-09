@@ -92,6 +92,13 @@ unlearning:
     cifar100:
       persistent_workers: true
       non_blocking: true
+      methods:
+        - retain_only
+        - ga_kl
+        - counterfactual_rebind
+        - entropy_rebind
+        - h_tgsd
+        - h_tgsd_no_sibling_preservation
   methods:
     - retain_only
     - ga_kl
@@ -106,6 +113,17 @@ unlearning:
   margin_weight: 0.5
   margin: 0.2
   entropy_weight: 1.0
+  h_tgsd:
+    target_weight: 1.0
+    entropy_weight: 1.0
+    unrelated_kl_weight: 1.0
+    unrelated_feature_weight: 1.0
+    sibling_kl_weight: 1.0
+    sibling_feature_weight: 1.0
+    shared_weight: 1.0
+    text_weight: 0.5
+    prototype_samples_per_class: 200
+    basis_tolerance: 0.00001
 
 attack:
   batch_size: 128

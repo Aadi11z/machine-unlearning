@@ -5,7 +5,7 @@ import os
 import random
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Mapping
 
 import torch
 import torch.nn.functional as F
@@ -21,6 +21,12 @@ from .data import (
     validate_checkpoint_dataset,
 )
 from .evaluate import build_class_text_features, evaluate_classification
+from .disentangle import (
+    SemanticBases,
+    build_semantic_bases,
+    collect_class_image_prototypes,
+    h_tgsd_objective,
+)
 from .model import load_checkpoint, precision_context, save_checkpoint
 from helpers.tracker import log_unlearn_run
 from .utils import (
@@ -38,7 +44,10 @@ UNLEARNING_METHODS = {
     "ga_kl",
     "counterfactual_rebind",
     "entropy_rebind",
+    "h_tgsd",
+    "h_tgsd_no_sibling_preservation",
 }
+H_TGSD_METHODS = {"h_tgsd", "h_tgsd_no_sibling_preservation"}
 
 
 @dataclass
@@ -69,6 +78,16 @@ class UnlearnConfig:
     margin_weight: float = 0.5
     margin: float = 0.2
     entropy_weight: float = 1.0
+    h_tgsd_target_weight: float = 1.0
+    h_tgsd_entropy_weight: float = 1.0
+    h_tgsd_unrelated_kl_weight: float = 1.0
+    h_tgsd_unrelated_feature_weight: float = 1.0
+    h_tgsd_sibling_kl_weight: float = 1.0
+    h_tgsd_sibling_feature_weight: float = 1.0
+    h_tgsd_shared_weight: float = 1.0
+    h_tgsd_text_weight: float = 0.5
+    h_tgsd_prototype_samples_per_class: int = 200
+    h_tgsd_basis_tolerance: float = 1e-5
     train_logit_scale: bool = True
 
 
@@ -134,9 +153,107 @@ def _eval_snapshot(
     }
 
 
+def _mean_component_losses(
+    history: Mapping[str, list[float]],
+) -> Dict[str, float]:
+    return {
+        f"loss_{name}": float(sum(values) / len(values))
+        for name, values in history.items()
+        if values
+    }
+
+
+def _validate_h_tgsd_request(
+    split: Mapping[str, object],
+) -> tuple[str, list[int], list[int]]:
+    request_type = str(split.get("request_type") or "")
+    target_classes = [
+        int(value)
+        for value in split.get(
+            "target_classes", split.get("forget_classes", [])
+        )
+    ]
+    sibling_classes = [
+        int(value) for value in split.get("sibling_classes", [])
+    ]
+    if request_type not in {"superclass", "selective_class"}:
+        raise ValueError(
+            "H-TGSD requires a superclass or selective_class split request"
+        )
+    if request_type == "selective_class" and not sibling_classes:
+        raise ValueError(
+            "Selective-class H-TGSD requires sibling classes in split metadata"
+        )
+    return request_type, target_classes, sibling_classes
+
+
+def _validate_h_tgsd_config(cfg: UnlearnConfig) -> None:
+    if not 0.0 <= cfg.h_tgsd_text_weight <= 1.0:
+        raise ValueError("h_tgsd_text_weight must be in [0, 1]")
+    if cfg.h_tgsd_prototype_samples_per_class < 1:
+        raise ValueError(
+            "h_tgsd_prototype_samples_per_class must be at least 1"
+        )
+    if cfg.h_tgsd_basis_tolerance <= 0:
+        raise ValueError("h_tgsd_basis_tolerance must be positive")
+    weights = {
+        "h_tgsd_target_weight": cfg.h_tgsd_target_weight,
+        "h_tgsd_entropy_weight": cfg.h_tgsd_entropy_weight,
+        "h_tgsd_unrelated_kl_weight": cfg.h_tgsd_unrelated_kl_weight,
+        "h_tgsd_unrelated_feature_weight": (
+            cfg.h_tgsd_unrelated_feature_weight
+        ),
+        "h_tgsd_sibling_kl_weight": cfg.h_tgsd_sibling_kl_weight,
+        "h_tgsd_sibling_feature_weight": (
+            cfg.h_tgsd_sibling_feature_weight
+        ),
+        "h_tgsd_shared_weight": cfg.h_tgsd_shared_weight,
+    }
+    negative = [name for name, value in weights.items() if value < 0]
+    if negative:
+        raise ValueError(f"H-TGSD weights must be non-negative: {negative}")
+
+
+def _student_teacher_outputs(
+    *,
+    model,
+    teacher,
+    batch: Dict[str, torch.Tensor],
+    student_text_features: torch.Tensor,
+    teacher_text_features: torch.Tensor,
+) -> tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+]:
+    student_features = model.encode_images(batch["pixel_values"])
+    student_logits = model.logits_from_embeddings(
+        student_features, student_text_features
+    )
+    with torch.no_grad():
+        teacher_features = teacher.encode_images(batch["pixel_values"])
+        teacher_logits = teacher.logits_from_embeddings(
+            teacher_features, teacher_text_features
+        )
+    return (
+        student_features,
+        student_logits,
+        teacher_features,
+        teacher_logits,
+    )
+
+
 def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
     if cfg.method not in UNLEARNING_METHODS:
         raise ValueError(f"Unsupported method={cfg.method}. Choose from {sorted(UNLEARNING_METHODS)}")
+    split, dataset_spec, class_names = load_split_metadata(
+        cfg.split_path, cfg.dataset_name
+    )
+    h_tgsd_request = None
+    if cfg.method in H_TGSD_METHODS:
+        _validate_h_tgsd_config(cfg)
+        h_tgsd_request = _validate_h_tgsd_request(split)
 
     set_seed(cfg.seed)
     device = get_device(cfg.device)
@@ -149,9 +266,6 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
 
     image_processor = CLIPImageProcessor.from_pretrained(cfg.model_name)
     tokenizer = CLIPTokenizer.from_pretrained(cfg.model_name)
-    _, dataset_spec, class_names = load_split_metadata(
-        cfg.split_path, cfg.dataset_name
-    )
     class_text_inputs = build_text_inputs(
         tokenizer,
         class_names=class_names,
@@ -196,57 +310,191 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
     # Infinite iterators to keep yielding batches because retain_train set >> forget 
     forget_iter = cycle_loader(loaders["forget"]) 
     retain_iter = cycle_loader(loaders["retain_train"])
+    unrelated_iter = None
+    sibling_iter = None
+    h_tgsd_bases: SemanticBases | None = None
+    h_tgsd_metadata: Dict[str, object] | None = None
+    h_tgsd_basis_path: Path | None = None
+    if cfg.method in H_TGSD_METHODS:
+        if student_text_features is None:
+            raise ValueError(
+                "H-TGSD requires a frozen text path with cacheable text features"
+            )
+        if h_tgsd_request is None:
+            raise RuntimeError("H-TGSD request was not initialized")
+        request_type, target_classes, sibling_classes = h_tgsd_request
+        if len(loaders["unrelated_retain"].dataset) == 0:
+            raise ValueError("H-TGSD requires unrelated retain samples")
+        prototype_loaders = [loaders["forget"]]
+        if sibling_classes:
+            if len(loaders["sibling_retain"].dataset) == 0:
+                raise ValueError(
+                    "H-TGSD requires sibling retain samples for this request"
+                )
+            prototype_loaders.append(loaders["sibling_retain"])
+            if cfg.method == "h_tgsd":
+                sibling_iter = cycle_loader(loaders["sibling_retain"])
+        with precision_context(model.cfg.precision, device):
+            prototypes, prototype_counts = collect_class_image_prototypes(
+                model=teacher,
+                loaders=prototype_loaders,
+                class_ids=[*target_classes, *sibling_classes],
+                samples_per_class=cfg.h_tgsd_prototype_samples_per_class,
+                device=device,
+                non_blocking=cfg.non_blocking,
+            )
+        h_tgsd_bases = build_semantic_bases(
+            class_image_prototypes=prototypes,
+            class_text_features=teacher_text_features,
+            target_classes=target_classes,
+            sibling_classes=sibling_classes,
+            request_type=request_type,
+            text_weight=cfg.h_tgsd_text_weight,
+            tolerance=cfg.h_tgsd_basis_tolerance,
+        )
+        unrelated_iter = cycle_loader(loaders["unrelated_retain"])
+        h_tgsd_metadata = {
+            **h_tgsd_bases.checkpoint_payload(),
+            "target_classes": target_classes,
+            "sibling_classes": sibling_classes,
+            "prototype_counts": prototype_counts,
+            "text_weight": cfg.h_tgsd_text_weight,
+            "basis_tolerance": cfg.h_tgsd_basis_tolerance,
+        }
+        h_tgsd_basis_path = metrics_dir / f"{cfg.method}_basis.pt"
+        torch.save(h_tgsd_metadata, h_tgsd_basis_path)
     
     rng = random.Random(cfg.seed)
 
     losses = []
+    component_history: Dict[str, list[float]] = {}
     show_progress = os.environ.get("UNML_TQDM", "0") == "1"
 
     for step in trange(cfg.steps, desc=f"unlearn:{cfg.method}", disable=not show_progress):
         model.set_train_mode()
 
-        batch_r = next(retain_iter)
-        batch_r = move_to_device(
-            batch_r, device, non_blocking=cfg.non_blocking
-        )
         with precision_context(model.cfg.precision, device):
-            if student_text_features is None:
-                logits_r = model.class_logits(
-                    pixel_values=batch_r["pixel_values"],
-                    class_input_ids=class_text_inputs["input_ids"],
-                    class_attention_mask=class_text_inputs["attention_mask"],
-                )
-            else:
-                logits_r = model.class_logits_from_text_features(
-                    pixel_values=batch_r["pixel_values"],
-                    class_text_features=student_text_features,
-                )
-            if cfg.method == "retain_only":
-                loss = F.cross_entropy(logits_r, batch_r["labels"])
-            else:
-                with torch.no_grad():
-                    t_logits_r = teacher.class_logits_from_text_features(
-                        pixel_values=batch_r["pixel_values"],
-                        class_text_features=teacher_text_features,
-                    )
-                retain_kl = _kl_div(logits_r, t_logits_r, cfg.kl_temperature)
-                batch_f = next(forget_iter)
+            if cfg.method in H_TGSD_METHODS:
+                if h_tgsd_bases is None or unrelated_iter is None:
+                    raise RuntimeError("H-TGSD context was not initialized")
                 batch_f = move_to_device(
-                    batch_f, device, non_blocking=cfg.non_blocking
+                    next(forget_iter),
+                    device,
+                    non_blocking=cfg.non_blocking,
+                )
+                batch_u = move_to_device(
+                    next(unrelated_iter),
+                    device,
+                    non_blocking=cfg.non_blocking,
+                )
+                target_outputs = _student_teacher_outputs(
+                    model=model,
+                    teacher=teacher,
+                    batch=batch_f,
+                    student_text_features=student_text_features,
+                    teacher_text_features=teacher_text_features,
+                )
+                unrelated_outputs = _student_teacher_outputs(
+                    model=model,
+                    teacher=teacher,
+                    batch=batch_u,
+                    student_text_features=student_text_features,
+                    teacher_text_features=teacher_text_features,
+                )
+                sibling_outputs = (None, None, None, None)
+                if sibling_iter is not None:
+                    batch_s = move_to_device(
+                        next(sibling_iter),
+                        device,
+                        non_blocking=cfg.non_blocking,
+                    )
+                    sibling_outputs = _student_teacher_outputs(
+                        model=model,
+                        teacher=teacher,
+                        batch=batch_s,
+                        student_text_features=student_text_features,
+                        teacher_text_features=teacher_text_features,
+                    )
+                components = h_tgsd_objective(
+                    target_features=target_outputs[0],
+                    target_teacher_features=target_outputs[2],
+                    target_logits=target_outputs[1],
+                    unrelated_student_features=unrelated_outputs[0],
+                    unrelated_student_logits=unrelated_outputs[1],
+                    unrelated_teacher_features=unrelated_outputs[2],
+                    unrelated_teacher_logits=unrelated_outputs[3],
+                    sibling_student_features=sibling_outputs[0],
+                    sibling_student_logits=sibling_outputs[1],
+                    sibling_teacher_features=sibling_outputs[2],
+                    sibling_teacher_logits=sibling_outputs[3],
+                    bases=h_tgsd_bases,
+                    temperature=cfg.kl_temperature,
+                    target_weight=cfg.h_tgsd_target_weight,
+                    entropy_weight=cfg.h_tgsd_entropy_weight,
+                    unrelated_kl_weight=cfg.h_tgsd_unrelated_kl_weight,
+                    unrelated_feature_weight=(
+                        cfg.h_tgsd_unrelated_feature_weight
+                    ),
+                    sibling_kl_weight=cfg.h_tgsd_sibling_kl_weight,
+                    sibling_feature_weight=(
+                        cfg.h_tgsd_sibling_feature_weight
+                    ),
+                    shared_weight=cfg.h_tgsd_shared_weight,
+                    preserve_siblings=(
+                        cfg.method != "h_tgsd_no_sibling_preservation"
+                    ),
+                )
+                loss = components["total"]
+            else:
+                batch_r = move_to_device(
+                    next(retain_iter),
+                    device,
+                    non_blocking=cfg.non_blocking,
                 )
                 if student_text_features is None:
-                    logits_f = model.class_logits(
-                        pixel_values=batch_f["pixel_values"],
+                    logits_r = model.class_logits(
+                        pixel_values=batch_r["pixel_values"],
                         class_input_ids=class_text_inputs["input_ids"],
-                        class_attention_mask=class_text_inputs["attention_mask"],
+                        class_attention_mask=class_text_inputs[
+                            "attention_mask"
+                        ],
                     )
                 else:
-                    logits_f = model.class_logits_from_text_features(
-                        pixel_values=batch_f["pixel_values"],
+                    logits_r = model.class_logits_from_text_features(
+                        pixel_values=batch_r["pixel_values"],
                         class_text_features=student_text_features,
                     )
+                if cfg.method == "retain_only":
+                    loss = F.cross_entropy(logits_r, batch_r["labels"])
+                else:
+                    with torch.no_grad():
+                        t_logits_r = teacher.class_logits_from_text_features(
+                            pixel_values=batch_r["pixel_values"],
+                            class_text_features=teacher_text_features,
+                        )
+                    retain_kl = _kl_div(
+                        logits_r, t_logits_r, cfg.kl_temperature
+                    )
+                    batch_f = move_to_device(
+                        next(forget_iter),
+                        device,
+                        non_blocking=cfg.non_blocking,
+                    )
+                    if student_text_features is None:
+                        logits_f = model.class_logits(
+                            pixel_values=batch_f["pixel_values"],
+                            class_input_ids=class_text_inputs["input_ids"],
+                            class_attention_mask=class_text_inputs[
+                                "attention_mask"
+                            ],
+                        )
+                    else:
+                        logits_f = model.class_logits_from_text_features(
+                            pixel_values=batch_f["pixel_values"],
+                            class_text_features=student_text_features,
+                        )
 
-            if cfg.method == "retain_only":
+            if cfg.method in H_TGSD_METHODS or cfg.method == "retain_only":
                 pass
             elif cfg.method == "ga_kl":
                 # Gradient Ascent (GA) with KL divergence:
@@ -295,10 +543,28 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
         optimizer.step()
 
         losses.append(tensor_to_float(loss))
+        if cfg.method in H_TGSD_METHODS:
+            for name, value in components.items():
+                component_history.setdefault(name, []).append(
+                    tensor_to_float(value)
+                )
 
         if (step + 1) % max(10, cfg.steps // 5) == 0:
             recent_loss = sum(losses[-10:]) / min(10, len(losses))
-            print(f"[unlearn:{cfg.method}] step={step+1} loss={recent_loss:.4f}", flush=True)
+            component_text = ""
+            if cfg.method in H_TGSD_METHODS:
+                component_text = " " + format_metrics(
+                    {
+                        name: values[-1]
+                        for name, values in component_history.items()
+                        if name != "total"
+                    }
+                )
+            print(
+                f"[unlearn:{cfg.method}] step={step+1} "
+                f"loss={recent_loss:.4f}{component_text}",
+                flush=True,
+            )
 
     model.eval()
     summary_metrics = _eval_snapshot(
@@ -310,6 +576,14 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
     )
     summary_metrics["avg_train_loss"] = float(sum(losses) / max(1, len(losses)))
     summary_metrics["steps"] = float(cfg.steps)
+    summary_metrics.update(_mean_component_losses(component_history))
+    if h_tgsd_bases is not None:
+        summary_metrics["target_basis_rank"] = float(
+            h_tgsd_bases.target.shape[1]
+        )
+        summary_metrics["shared_basis_rank"] = float(
+            h_tgsd_bases.shared.shape[1]
+        )
     print(f"[unlearn:{cfg.method}] {format_metrics(summary_metrics)}", flush=True)
 
     ckpt_path = ckpt_dir / f"unlearn_{cfg.method}.pt"
@@ -327,6 +601,7 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
             "cached_student_text_features": (
                 student_text_features is not None
             ),
+            "h_tgsd_basis": h_tgsd_metadata,
             "metrics": summary_metrics,
         },
     )
@@ -337,14 +612,22 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
             "method": cfg.method,
             "summary_metrics": summary_metrics,
             "config": cfg.__dict__,
+            "basis_path": (
+                str(h_tgsd_basis_path)
+                if h_tgsd_basis_path is not None
+                else None
+            ),
         },
         metrics_path,
     )
 
     log_unlearn_run(cfg.__dict__, summary_metrics)
 
-    return {
+    result: Dict[str, str | float] = {
         "checkpoint": str(ckpt_path),
         "metrics_path": str(metrics_path),
         **summary_metrics,
     }
+    if h_tgsd_basis_path is not None:
+        result["basis_path"] = str(h_tgsd_basis_path)
+    return result

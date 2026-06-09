@@ -62,6 +62,41 @@ def resolve_str_list(cli_value: str | None, payload: dict[str, Any], path: Seque
     return [item.strip() for item in fallback if str(item).strip()]
 
 
+def resolve_section_str_list(
+    cli_value: str | None,
+    payload: dict[str, Any],
+    dataset_name: str,
+    section: str,
+    key: str,
+    fallback: Iterable[str],
+) -> list[str]:
+    if cli_value is not None:
+        return [
+            item.strip() for item in cli_value.split(",") if item.strip()
+        ]
+    value = resolve_section_value(
+        None,
+        payload,
+        dataset_name,
+        section,
+        key,
+        None,
+    )
+    if value is None:
+        return [
+            str(item).strip()
+            for item in fallback
+            if str(item).strip()
+        ]
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    raise ValueError(
+        f"Expected list or comma-separated string at {section}.{key}"
+    )
+
+
 def parse_forget_classes(raw: str | Sequence[int]) -> list[int]:
     if isinstance(raw, str):
         return [int(item.strip()) for item in raw.split(",") if item.strip()]

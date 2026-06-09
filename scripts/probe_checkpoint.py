@@ -22,8 +22,8 @@ from unml.config import (
     resolve_dataset_and_split_path,
     resolve_model_value,
     resolve_output_root,
+    resolve_section_str_list,
     resolve_stage_output_dir,
-    resolve_str_list,
     resolve_value,
 )
 
@@ -91,10 +91,12 @@ def main() -> None:
             candidate_names.append(name)
             candidate_checkpoints.append(checkpoint)
     else:
-        for method in resolve_str_list(
+        for method in resolve_section_str_list(
             None,
             runtime_cfg,
-            ("unlearning", "methods"),
+            dataset,
+            "unlearning",
+            "methods",
             ("counterfactual_rebind",),
         ):
             candidate_names.append(method)

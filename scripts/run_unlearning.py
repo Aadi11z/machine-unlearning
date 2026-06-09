@@ -21,13 +21,20 @@ from unml.config import (
     resolve_data_dir,
     resolve_dataset_and_split_path,
     resolve_model_value,
+    resolve_section_str_list,
     resolve_section_value,
     resolve_stage_output_dir,
-    resolve_str_list,
     resolve_value,
 )
 
-UNLEARNING_METHODS = ("retain_only", "ga_kl", "counterfactual_rebind", "entropy_rebind")
+UNLEARNING_METHODS = (
+    "retain_only",
+    "ga_kl",
+    "counterfactual_rebind",
+    "entropy_rebind",
+    "h_tgsd",
+    "h_tgsd_no_sibling_preservation",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -67,6 +74,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--margin-weight", type=float, default=None)
     parser.add_argument("--margin", type=float, default=None)
     parser.add_argument("--entropy-weight", type=float, default=None)
+    parser.add_argument("--h-tgsd-target-weight", type=float, default=None)
+    parser.add_argument("--h-tgsd-entropy-weight", type=float, default=None)
+    parser.add_argument(
+        "--h-tgsd-unrelated-kl-weight", type=float, default=None
+    )
+    parser.add_argument(
+        "--h-tgsd-unrelated-feature-weight", type=float, default=None
+    )
+    parser.add_argument(
+        "--h-tgsd-sibling-kl-weight", type=float, default=None
+    )
+    parser.add_argument(
+        "--h-tgsd-sibling-feature-weight", type=float, default=None
+    )
+    parser.add_argument("--h-tgsd-shared-weight", type=float, default=None)
+    parser.add_argument("--h-tgsd-text-weight", type=float, default=None)
+    parser.add_argument(
+        "--h-tgsd-prototype-samples-per-class", type=int, default=None
+    )
+    parser.add_argument(
+        "--h-tgsd-basis-tolerance", type=float, default=None
+    )
 
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--device", type=str, default=None)
@@ -82,8 +111,13 @@ def main() -> None:
 
     from unml.unlearn import UnlearnConfig, run_unlearning
 
-    methods = resolve_str_list(
-        None, runtime_cfg, ("unlearning", "methods"), ("counterfactual_rebind",)
+    methods = resolve_section_str_list(
+        None,
+        runtime_cfg,
+        dataset_name,
+        "unlearning",
+        "methods",
+        ("counterfactual_rebind",),
     )
     default_method = methods[0] if methods else "counterfactual_rebind"
     training_output_dir = resolve_stage_output_dir(
@@ -197,6 +231,66 @@ def main() -> None:
         margin=resolve_value(args.margin, runtime_cfg, ("unlearning", "margin"), 0.2),
         entropy_weight=resolve_value(
             args.entropy_weight, runtime_cfg, ("unlearning", "entropy_weight"), 1.0
+        ),
+        h_tgsd_target_weight=resolve_value(
+            args.h_tgsd_target_weight,
+            runtime_cfg,
+            ("unlearning", "h_tgsd", "target_weight"),
+            1.0,
+        ),
+        h_tgsd_entropy_weight=resolve_value(
+            args.h_tgsd_entropy_weight,
+            runtime_cfg,
+            ("unlearning", "h_tgsd", "entropy_weight"),
+            1.0,
+        ),
+        h_tgsd_unrelated_kl_weight=resolve_value(
+            args.h_tgsd_unrelated_kl_weight,
+            runtime_cfg,
+            ("unlearning", "h_tgsd", "unrelated_kl_weight"),
+            1.0,
+        ),
+        h_tgsd_unrelated_feature_weight=resolve_value(
+            args.h_tgsd_unrelated_feature_weight,
+            runtime_cfg,
+            ("unlearning", "h_tgsd", "unrelated_feature_weight"),
+            1.0,
+        ),
+        h_tgsd_sibling_kl_weight=resolve_value(
+            args.h_tgsd_sibling_kl_weight,
+            runtime_cfg,
+            ("unlearning", "h_tgsd", "sibling_kl_weight"),
+            1.0,
+        ),
+        h_tgsd_sibling_feature_weight=resolve_value(
+            args.h_tgsd_sibling_feature_weight,
+            runtime_cfg,
+            ("unlearning", "h_tgsd", "sibling_feature_weight"),
+            1.0,
+        ),
+        h_tgsd_shared_weight=resolve_value(
+            args.h_tgsd_shared_weight,
+            runtime_cfg,
+            ("unlearning", "h_tgsd", "shared_weight"),
+            1.0,
+        ),
+        h_tgsd_text_weight=resolve_value(
+            args.h_tgsd_text_weight,
+            runtime_cfg,
+            ("unlearning", "h_tgsd", "text_weight"),
+            0.5,
+        ),
+        h_tgsd_prototype_samples_per_class=resolve_value(
+            args.h_tgsd_prototype_samples_per_class,
+            runtime_cfg,
+            ("unlearning", "h_tgsd", "prototype_samples_per_class"),
+            200,
+        ),
+        h_tgsd_basis_tolerance=resolve_value(
+            args.h_tgsd_basis_tolerance,
+            runtime_cfg,
+            ("unlearning", "h_tgsd", "basis_tolerance"),
+            1e-5,
         ),
         train_logit_scale=resolve_model_value(
             None,
