@@ -102,6 +102,24 @@ Smoke settings are stored under `training.smoke` in
 `phase2_benchmark`, marked as partial, and must not be used as research
 results.
 
+For CIFAR-100, the config also enables the optimized input pipeline:
+
+```yaml
+training:
+  profiles:
+    cifar100:
+      persistent_workers: true
+      non_blocking: true
+  pin_memory: true
+  prefetch_factor: 2
+```
+
+Pinned host buffers and nonblocking CUDA copies can overlap data transfer with
+GPU work. Persistent workers are used only for reusable training loaders;
+evaluation loaders are kept nonpersistent to avoid retaining many worker
+processes. The same controls apply to unlearning and attack evaluation.
+Throughput improvement must be measured on Sharanga before it is reported.
+
 Artifacts remain isolated:
 
 ```text

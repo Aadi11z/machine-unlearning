@@ -21,6 +21,7 @@ from unml.config import (
     resolve_data_dir,
     resolve_dataset_and_split_path,
     resolve_model_value,
+    resolve_section_value,
     resolve_stage_output_dir,
     resolve_str_list,
     resolve_value,
@@ -151,8 +152,45 @@ def main() -> None:
         batch_size=resolve_value(
             args.batch_size, runtime_cfg, ("attack", "batch_size"), 128
         ),
-        num_workers=resolve_value(
-            args.num_workers, runtime_cfg, ("attack", "num_workers"), 4
+        num_workers=resolve_section_value(
+            args.num_workers,
+            runtime_cfg,
+            dataset_name,
+            "attack",
+            "num_workers",
+            4,
+        ),
+        pin_memory=resolve_section_value(
+            None,
+            runtime_cfg,
+            dataset_name,
+            "attack",
+            "pin_memory",
+            True,
+        ),
+        persistent_workers=resolve_section_value(
+            None,
+            runtime_cfg,
+            dataset_name,
+            "attack",
+            "persistent_workers",
+            False,
+        ),
+        prefetch_factor=resolve_section_value(
+            None,
+            runtime_cfg,
+            dataset_name,
+            "attack",
+            "prefetch_factor",
+            2,
+        ),
+        non_blocking=resolve_section_value(
+            None,
+            runtime_cfg,
+            dataset_name,
+            "attack",
+            "non_blocking",
+            False,
         ),
         max_attack_samples=resolve_value(
             args.max_attack_samples, runtime_cfg, ("attack", "max_attack_samples"), 4000

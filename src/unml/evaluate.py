@@ -30,6 +30,7 @@ def evaluate_classification(
     device: torch.device,
     max_batches: int | None = None,
     class_text_features: torch.Tensor | None = None,
+    non_blocking: bool = False,
 ) -> Dict[str, float]:
     # Performs supervised eval
     model.eval()
@@ -44,7 +45,7 @@ def evaluate_classification(
         if max_batches is not None and step >= max_batches: 
             # if you want early stopping, declare max_batches
             break
-        batch = move_to_device(batch, device)
+        batch = move_to_device(batch, device, non_blocking=non_blocking)
         logits = model.class_logits_from_text_features(
             pixel_values=batch["pixel_values"],
             class_text_features=class_text_features,
@@ -73,6 +74,7 @@ def collect_true_class_confidences(
     device: torch.device,
     max_samples: int | None = None,
     class_text_features: torch.Tensor | None = None,
+    non_blocking: bool = False,
 ):
     model.eval()
     if class_text_features is None:
@@ -83,7 +85,7 @@ def collect_true_class_confidences(
     labels_all = []
     indices_all = []
     for batch in loader:
-        batch = move_to_device(batch, device)
+        batch = move_to_device(batch, device, non_blocking=non_blocking)
         logits = model.class_logits_from_text_features(
             pixel_values=batch["pixel_values"],
             class_text_features=class_text_features,

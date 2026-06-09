@@ -219,8 +219,45 @@ def main() -> None:
             "gradient_accumulation_steps",
             1,
         ),
-        num_workers=resolve_value(
-            args.num_workers, runtime_cfg, ("training", "num_workers"), 4
+        num_workers=resolve_section_value(
+            args.num_workers,
+            runtime_cfg,
+            dataset_name,
+            "training",
+            "num_workers",
+            4,
+        ),
+        pin_memory=resolve_section_value(
+            None,
+            runtime_cfg,
+            dataset_name,
+            "training",
+            "pin_memory",
+            True,
+        ),
+        persistent_workers=resolve_section_value(
+            None,
+            runtime_cfg,
+            dataset_name,
+            "training",
+            "persistent_workers",
+            False,
+        ),
+        prefetch_factor=resolve_section_value(
+            None,
+            runtime_cfg,
+            dataset_name,
+            "training",
+            "prefetch_factor",
+            2,
+        ),
+        non_blocking=resolve_section_value(
+            None,
+            runtime_cfg,
+            dataset_name,
+            "training",
+            "non_blocking",
+            False,
         ),
         lr=resolve_value(args.lr, runtime_cfg, ("training", "lr"), 3e-3),
         weight_decay=resolve_value(

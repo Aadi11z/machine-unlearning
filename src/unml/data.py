@@ -552,22 +552,39 @@ def build_loaders(
     batch_size: int,
     num_workers: int,
     dataset_name: str | None = None,
+    pin_memory: bool = True,
+    persistent_workers: bool = False,
+    prefetch_factor: int | None = 2,
 ) -> Dict[str, DataLoader]:
+    if num_workers < 0:
+        raise ValueError("num_workers must be non-negative")
+    if prefetch_factor is not None and prefetch_factor < 1:
+        raise ValueError("prefetch_factor must be at least 1")
     split, spec, _ = load_split_metadata(split_path, dataset_name)
     train_ds, test_ds = _load_dataset_pair(data_dir, spec.name, download=False)
     collate_fn = make_collate_fn(image_processor)
 
     def _loader(
-        dataset: Dataset, shuffle: bool, drop_last: bool = False
+        dataset: Dataset,
+        shuffle: bool,
+        drop_last: bool = False,
+        reuse_workers: bool = False,
     ) -> DataLoader:
+        worker_options = {}
+        if num_workers > 0:
+            worker_options = {
+                "persistent_workers": persistent_workers and reuse_workers,
+                "prefetch_factor": prefetch_factor,
+            }
         return DataLoader(
             dataset,
             batch_size=batch_size,
             shuffle=shuffle,
             num_workers=num_workers,
-            pin_memory=True,
+            pin_memory=pin_memory,
             collate_fn=collate_fn,
             drop_last=drop_last,
+            **worker_options,
         )
 
     subsets = {
@@ -594,20 +611,28 @@ def build_loaders(
     }
 
     return {
-        "forget": _loader(subsets["forget"], shuffle=True),
-        "retain_train": _loader(subsets["retain_train"], shuffle=True),
+        "forget": _loader(
+            subsets["forget"], shuffle=True, reuse_workers=True
+        ),
+        "retain_train": _loader(
+            subsets["retain_train"], shuffle=True, reuse_workers=True
+        ),
         "retain_val": _loader(subsets["retain_val"], shuffle=False),
-        "finetune_train": _loader(subsets["finetune_train"], shuffle=True),
+        "finetune_train": _loader(
+            subsets["finetune_train"], shuffle=True, reuse_workers=True
+        ),
         "test_forget": _loader(subsets["test_forget"], shuffle=False),
         "test_retain": _loader(subsets["test_retain"], shuffle=False),
         "test_all": _loader(subsets["test_all"], shuffle=False),
         "sibling_retain": _loader(
             subsets["sibling_retain"],
             shuffle=len(subsets["sibling_retain"]) > 0,
+            reuse_workers=True,
         ),
         "unrelated_retain": _loader(
             subsets["unrelated_retain"],
             shuffle=len(subsets["unrelated_retain"]) > 0,
+            reuse_workers=True,
         ),
         "test_sibling": _loader(subsets["test_sibling"], shuffle=False),
         "test_unrelated": _loader(subsets["test_unrelated"], shuffle=False),

@@ -23,7 +23,14 @@ from .data import (
 from .evaluate import build_class_text_features, evaluate_classification
 from .model import load_checkpoint, precision_context, save_checkpoint
 from helpers.tracker import log_unlearn_run
-from .utils import format_metrics, get_device, save_json, set_seed, tensor_to_float
+from .utils import (
+    format_metrics,
+    get_device,
+    move_to_device,
+    save_json,
+    set_seed,
+    tensor_to_float,
+)
 
 
 UNLEARNING_METHODS = {
@@ -46,6 +53,10 @@ class UnlearnConfig:
     prompt_template: str = "a photo of a {}"
     batch_size: int = 128
     num_workers: int = 4
+    pin_memory: bool = True
+    persistent_workers: bool = False
+    prefetch_factor: int = 2
+    non_blocking: bool = False
     steps: int = 500
     lr: float = 5e-4
     weight_decay: float = 0.0
@@ -82,7 +93,13 @@ def _kl_div(student_logits: torch.Tensor, teacher_logits: torch.Tensor, temperat
     return F.kl_div(s, t, reduction="batchmean") * (temperature**2)
 
 
-def _eval_snapshot(model, loaders, class_text_inputs, device: torch.device) -> Dict[str, float]:
+def _eval_snapshot(
+    model,
+    loaders,
+    class_text_inputs,
+    device: torch.device,
+    non_blocking: bool = False,
+) -> Dict[str, float]:
     model.eval()
     class_text_features = build_class_text_features(
         model, class_text_inputs, device
@@ -91,6 +108,7 @@ def _eval_snapshot(model, loaders, class_text_inputs, device: torch.device) -> D
         "class_text_inputs": class_text_inputs,
         "device": device,
         "class_text_features": class_text_features,
+        "non_blocking": non_blocking,
     }
     retain_train = evaluate_classification(
         model, loaders["retain_train"], **evaluation_args
@@ -148,6 +166,9 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
         batch_size=cfg.batch_size,
         num_workers=cfg.num_workers,
         dataset_name=dataset_spec.name,
+        pin_memory=cfg.pin_memory,
+        persistent_workers=cfg.persistent_workers,
+        prefetch_factor=cfg.prefetch_factor,
     )
 
     model, finetune_meta = load_checkpoint(cfg.finetuned_checkpoint, map_location=device)
@@ -185,7 +206,9 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
         model.set_train_mode()
 
         batch_r = next(retain_iter)
-        batch_r = {k: v.to(device) for k, v in batch_r.items()}
+        batch_r = move_to_device(
+            batch_r, device, non_blocking=cfg.non_blocking
+        )
         with precision_context(model.cfg.precision, device):
             if student_text_features is None:
                 logits_r = model.class_logits(
@@ -208,7 +231,9 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
                     )
                 retain_kl = _kl_div(logits_r, t_logits_r, cfg.kl_temperature)
                 batch_f = next(forget_iter)
-                batch_f = {k: v.to(device) for k, v in batch_f.items()}
+                batch_f = move_to_device(
+                    batch_f, device, non_blocking=cfg.non_blocking
+                )
                 if student_text_features is None:
                     logits_f = model.class_logits(
                         pixel_values=batch_f["pixel_values"],
@@ -276,7 +301,13 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
             print(f"[unlearn:{cfg.method}] step={step+1} loss={recent_loss:.4f}", flush=True)
 
     model.eval()
-    summary_metrics = _eval_snapshot(model, loaders, class_text_inputs, device)
+    summary_metrics = _eval_snapshot(
+        model,
+        loaders,
+        class_text_inputs,
+        device,
+        non_blocking=cfg.non_blocking,
+    )
     summary_metrics["avg_train_loss"] = float(sum(losses) / max(1, len(losses)))
     summary_metrics["steps"] = float(cfg.steps)
     print(f"[unlearn:{cfg.method}] {format_metrics(summary_metrics)}", flush=True)

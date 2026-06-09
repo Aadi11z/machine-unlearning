@@ -112,8 +112,13 @@ def main() -> None:
         "batch_size",
         128,
     )
-    ft_num_workers = resolve_value(
-        args.num_workers, runtime_cfg, ("training", "num_workers"), 4
+    ft_num_workers = resolve_section_value(
+        args.num_workers,
+        runtime_cfg,
+        dataset_name,
+        "training",
+        "num_workers",
+        4,
     )
     ft_epochs = resolve_value(args.ft_epochs, runtime_cfg, ("training", "epochs"), 10)
     ft_max_steps = resolve_value(
@@ -130,15 +135,37 @@ def main() -> None:
     ul_batch_size = resolve_value(
         args.batch_size, runtime_cfg, ("unlearning", "batch_size"), 128
     )
-    ul_num_workers = resolve_value(
-        args.num_workers, runtime_cfg, ("unlearning", "num_workers"), 4
+    ul_num_workers = resolve_section_value(
+        args.num_workers,
+        runtime_cfg,
+        dataset_name,
+        "unlearning",
+        "num_workers",
+        4,
     )
     ul_steps = resolve_value(args.ul_steps, runtime_cfg, ("unlearning", "steps"), 500)
     attack_batch_size = resolve_value(
         args.batch_size, runtime_cfg, ("attack", "batch_size"), 128
     )
-    attack_num_workers = resolve_value(
-        args.num_workers, runtime_cfg, ("attack", "num_workers"), 4
+    attack_num_workers = resolve_section_value(
+        args.num_workers,
+        runtime_cfg,
+        dataset_name,
+        "attack",
+        "num_workers",
+        4,
+    )
+    ft_pin_memory = resolve_section_value(
+        None, runtime_cfg, dataset_name, "training", "pin_memory", True
+    )
+    ft_persistent_workers = resolve_section_value(
+        None, runtime_cfg, dataset_name, "training", "persistent_workers", False
+    )
+    ft_prefetch_factor = resolve_section_value(
+        None, runtime_cfg, dataset_name, "training", "prefetch_factor", 2
+    )
+    ft_non_blocking = resolve_section_value(
+        None, runtime_cfg, dataset_name, "training", "non_blocking", False
     )
     methods = resolve_str_list(
         args.methods,
@@ -173,6 +200,11 @@ def main() -> None:
         print(f"unlearning_dir={unlearn_dir}")
         print(f"comparison_dir={compare_dir}")
         print(f"methods={','.join(methods)}")
+        print(f"training.num_workers={ft_num_workers}")
+        print(f"training.pin_memory={ft_pin_memory}")
+        print(f"training.persistent_workers={ft_persistent_workers}")
+        print(f"training.prefetch_factor={ft_prefetch_factor}")
+        print(f"training.non_blocking={ft_non_blocking}")
         print(f"seed={seed}")
         print(f"device={device}")
         return

@@ -41,6 +41,10 @@ class AttackConfig:
     prompt_template: str = "a photo of a {}"
     batch_size: int = 128
     num_workers: int = 4
+    pin_memory: bool = True
+    persistent_workers: bool = False
+    prefetch_factor: int = 2
+    non_blocking: bool = False
     max_attack_samples: int = 4000
     device: str = "auto"
 
@@ -89,7 +93,15 @@ def _mia_metrics(member_current: np.ndarray, nonmember_current: np.ndarray, memb
     }
 
 
-def _evaluate_model(model, base_model, loaders: Dict[str, DataLoader], class_text_inputs: Dict[str, torch.Tensor], device: torch.device, max_attack_samples: int) -> Dict[str, float]:
+def _evaluate_model(
+    model,
+    base_model,
+    loaders: Dict[str, DataLoader],
+    class_text_inputs: Dict[str, torch.Tensor],
+    device: torch.device,
+    max_attack_samples: int,
+    non_blocking: bool = False,
+) -> Dict[str, float]:
     model_text_features = build_class_text_features(
         model, class_text_inputs, device
     )
@@ -100,6 +112,7 @@ def _evaluate_model(model, base_model, loaders: Dict[str, DataLoader], class_tex
         "class_text_inputs": class_text_inputs,
         "device": device,
         "class_text_features": model_text_features,
+        "non_blocking": non_blocking,
     }
     util_test_all = evaluate_classification(
         model, loaders["test_all"], **model_eval_args
@@ -118,6 +131,7 @@ def _evaluate_model(model, base_model, loaders: Dict[str, DataLoader], class_tex
         device,
         max_samples=max_attack_samples,
         class_text_features=model_text_features,
+        non_blocking=non_blocking,
     )
     nonmember = collect_true_class_confidences(
         model,
@@ -126,6 +140,7 @@ def _evaluate_model(model, base_model, loaders: Dict[str, DataLoader], class_tex
         device,
         max_samples=max_attack_samples,
         class_text_features=model_text_features,
+        non_blocking=non_blocking,
     )
 
     member_base = collect_true_class_confidences(
@@ -135,6 +150,7 @@ def _evaluate_model(model, base_model, loaders: Dict[str, DataLoader], class_tex
         device,
         max_samples=max_attack_samples,
         class_text_features=base_text_features,
+        non_blocking=non_blocking,
     )
     nonmember_base = collect_true_class_confidences(
         base_model,
@@ -143,6 +159,7 @@ def _evaluate_model(model, base_model, loaders: Dict[str, DataLoader], class_tex
         device,
         max_samples=max_attack_samples,
         class_text_features=base_text_features,
+        non_blocking=non_blocking,
     )
 
     attacks = _mia_metrics(
@@ -203,6 +220,9 @@ def run_attack_comparison(cfg: AttackConfig) -> Dict[str, str]:
         batch_size=cfg.batch_size,
         num_workers=cfg.num_workers,
         dataset_name=dataset_spec.name,
+        pin_memory=cfg.pin_memory,
+        persistent_workers=cfg.persistent_workers,
+        prefetch_factor=cfg.prefetch_factor,
     )
 
     base_model, base_meta = load_checkpoint(cfg.base_checkpoint, map_location=device)
@@ -222,6 +242,7 @@ def run_attack_comparison(cfg: AttackConfig) -> Dict[str, str]:
             class_text_inputs=class_text_inputs,
             device=device,
             max_attack_samples=cfg.max_attack_samples,
+            non_blocking=cfg.non_blocking,
         )
         records.append({"model": name, "checkpoint": ckpt_path, **metrics, "meta": str(meta)})
         update_unlearn_with_attacks(name, metrics)

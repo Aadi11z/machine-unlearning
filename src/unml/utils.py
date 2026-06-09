@@ -38,8 +38,15 @@ def get_device(requested: str = "auto") -> torch.device:
         return torch.device("cpu")
     return torch.device(requested)
 
-def move_to_device(batch: Dict[str, torch.Tensor], device: torch.device) -> Dict[str, torch.Tensor]:
-    return {key: value.to(device) for key, value in batch.items()}
+def move_to_device(
+    batch: Dict[str, torch.Tensor],
+    device: torch.device,
+    non_blocking: bool = False,
+) -> Dict[str, torch.Tensor]:
+    return {
+        key: value.to(device, non_blocking=non_blocking)
+        for key, value in batch.items()
+    }
 
 def tensor_to_float(value: torch.Tensor | float) -> float:
     if isinstance(value, torch.Tensor):

@@ -18,7 +18,14 @@ from .data import build_loaders, build_text_inputs, load_split_metadata
 from .evaluate import build_class_text_features, evaluate_classification
 from .model import ModelConfig, LightweightVLM, precision_context, save_checkpoint
 from helpers.tracker import log_finetune_epoch, log_finetune_summary
-from .utils import format_metrics, get_device, save_json, set_seed, tensor_to_float
+from .utils import (
+    format_metrics,
+    get_device,
+    move_to_device,
+    save_json,
+    set_seed,
+    tensor_to_float,
+)
 from .utils import collect_run_provenance
 
 
@@ -43,6 +50,10 @@ class FineTuneConfig:
     batch_size: int = 128
     gradient_accumulation_steps: int = 1
     num_workers: int = 4
+    pin_memory: bool = True
+    persistent_workers: bool = False
+    prefetch_factor: int = 2
+    non_blocking: bool = False
     lr: float = 1e-3
     weight_decay: float = 1e-4
     epochs: int = 5
@@ -60,6 +71,7 @@ def _evaluate_all(
     class_text_inputs,
     device: torch.device,
     max_batches: int | None = None,
+    non_blocking: bool = False,
 ) -> Dict[str, float]:
     model.eval()
     class_text_features = build_class_text_features(
@@ -70,6 +82,7 @@ def _evaluate_all(
         "device": device,
         "class_text_features": class_text_features,
         "max_batches": max_batches,
+        "non_blocking": non_blocking,
     }
     retain_val = evaluate_classification(
         model, loaders["retain_val"], **evaluation_args
@@ -128,6 +141,9 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
         batch_size=cfg.batch_size,
         num_workers=cfg.num_workers,
         dataset_name=dataset_spec.name,
+        pin_memory=cfg.pin_memory,
+        persistent_workers=cfg.persistent_workers,
+        prefetch_factor=cfg.prefetch_factor,
     )
 
     model_cfg = ModelConfig(
@@ -202,7 +218,9 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
         )
         optimizer.zero_grad(set_to_none=True)
         for batch_index, batch in enumerate(progress):
-            batch = {k: v.to(device) for k, v in batch.items()}
+            batch = move_to_device(
+                batch, device, non_blocking=cfg.non_blocking
+            )
             processed_examples += int(batch["labels"].numel())
             with precision_context(cfg.precision, device):
                 if cached_train_text_features is None:
@@ -265,6 +283,7 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
             class_text_inputs,
             device,
             max_batches=cfg.max_eval_batches,
+            non_blocking=cfg.non_blocking,
         )
         final_metrics = eval_metrics
         epoch_loss = sum(epoch_losses) / max(1, len(epoch_losses))
@@ -315,6 +334,13 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
         ),
         "device": str(device),
         "precision": cfg.precision,
+        "num_workers": cfg.num_workers,
+        "pin_memory": cfg.pin_memory,
+        "persistent_workers": cfg.persistent_workers and cfg.num_workers > 0,
+        "prefetch_factor": (
+            cfg.prefetch_factor if cfg.num_workers > 0 else None
+        ),
+        "non_blocking": cfg.non_blocking,
     }
     if final_metrics is None:
         raise RuntimeError("Fine-tuning completed without an evaluation snapshot")

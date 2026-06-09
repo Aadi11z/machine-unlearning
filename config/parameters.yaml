@@ -64,7 +64,13 @@ training:
     cifar100:
       batch_size: 64
       gradient_accumulation_steps: 2
+      persistent_workers: true
+      non_blocking: true
   num_workers: 4
+  pin_memory: true
+  persistent_workers: false
+  prefetch_factor: 2
+  non_blocking: false
   gradient_accumulation_steps: 1
   lr: 0.003
   weight_decay: 0.0001
@@ -78,6 +84,14 @@ training:
 unlearning:
   batch_size: 128
   num_workers: 4
+  pin_memory: true
+  persistent_workers: false
+  prefetch_factor: 2
+  non_blocking: false
+  profiles:
+    cifar100:
+      persistent_workers: true
+      non_blocking: true
   methods:
     - retain_only
     - ga_kl
@@ -96,4 +110,12 @@ unlearning:
 attack:
   batch_size: 128
   num_workers: 4
+  pin_memory: true
+  persistent_workers: false
+  prefetch_factor: 2
+  non_blocking: false
+  profiles:
+    cifar100:
+      persistent_workers: true
+      non_blocking: true
   max_attack_samples: 4000
