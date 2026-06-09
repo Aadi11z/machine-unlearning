@@ -41,3 +41,21 @@ def test_pipeline_show_config_does_not_start_pipeline() -> None:
     assert "dataset=cifar10" in proc.stdout
     assert "output_root=outputs/cifar10" in proc.stdout
     assert "[cmd]" not in proc.stdout
+
+
+def test_pipeline_cifar100_selects_vit_b16_vision_lora() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    cmd = [
+        sys.executable,
+        str(repo_root / "scripts/run_pipeline.py"),
+        "--dataset",
+        "cifar100",
+        "--show-config",
+    ]
+    proc = subprocess.run(
+        cmd, capture_output=True, text=True, check=False, cwd=repo_root
+    )
+
+    assert proc.returncode == 0
+    assert "model_name=openai/clip-vit-base-patch16" in proc.stdout
+    assert "adapter_type=vision_lora" in proc.stdout

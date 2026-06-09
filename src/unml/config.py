@@ -217,6 +217,57 @@ def resolve_dataset_value(
     return fallback
 
 
+def resolve_model_value(
+    cli_value: Any,
+    payload: dict[str, Any],
+    dataset_name: str,
+    key: str,
+    fallback: Any,
+) -> Any:
+    """Resolve a model setting from CLI, dataset profile, shared config, fallback."""
+    if cli_value is not None:
+        return cli_value
+
+    dataset_name = normalize_dataset_name(dataset_name)
+    profile_value = nested_get(
+        payload, ("model", "profiles", dataset_name, key)
+    )
+    if profile_value is not None:
+        return profile_value
+
+    shared_value = nested_get(payload, ("model", key))
+    if shared_value is not None:
+        return shared_value
+
+    return fallback
+
+
+def resolve_section_value(
+    cli_value: Any,
+    payload: dict[str, Any],
+    dataset_name: str,
+    section: str,
+    key: str,
+    fallback: Any,
+) -> Any:
+    """Resolve a stage setting with an optional dataset-specific profile."""
+    if cli_value is not None:
+        return cli_value
+
+    dataset_name = normalize_dataset_name(dataset_name)
+    profile_value = nested_get(
+        payload, (section, "profiles", dataset_name, key)
+    )
+    if profile_value is not None:
+        return profile_value
+
+    shared_value = nested_get(payload, (section, key))
+    if shared_value is not None:
+        return shared_value
+
+    return fallback
+
+
 def resolve_output_root(
     cli_output_root: str | None,
     payload: dict[str, Any],

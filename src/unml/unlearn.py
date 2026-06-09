@@ -21,7 +21,7 @@ from .data import (
     validate_checkpoint_dataset,
 )
 from .evaluate import evaluate_classification
-from .model import load_checkpoint, save_checkpoint
+from .model import load_checkpoint, precision_context, save_checkpoint
 from helpers.tracker import log_unlearn_run
 from .utils import format_metrics, get_device, save_json, set_seed, tensor_to_float
 
@@ -58,6 +58,7 @@ class UnlearnConfig:
     margin_weight: float = 0.5
     margin: float = 0.2
     entropy_weight: float = 1.0
+    train_logit_scale: bool = True
 
 
 def _sample_counterfactual(labels: torch.Tensor, num_classes: int, rng: random.Random) -> torch.Tensor:
@@ -135,6 +136,7 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
         finetune_meta, dataset_spec.name, cfg.finetuned_checkpoint
     )
     model = model.to(device)
+    model.configure_for_unlearning(cfg.train_logit_scale)
     model.clip.eval()
 
     teacher = copy.deepcopy(model).eval().to(device) # left-to-right chaining, deepcopy doesnt affect original
@@ -153,37 +155,37 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
     show_progress = os.environ.get("UNML_TQDM", "0") == "1"
 
     for step in trange(cfg.steps, desc=f"unlearn:{cfg.method}", disable=not show_progress):
-        model.train()
-        model.clip.eval()
+        model.set_train_mode()
 
         batch_r = next(retain_iter)
         batch_r = {k: v.to(device) for k, v in batch_r.items()}
-        logits_r = model.class_logits(
-            pixel_values=batch_r["pixel_values"],
-            class_input_ids=class_text_inputs["input_ids"],
-            class_attention_mask=class_text_inputs["attention_mask"],
-        )
-        if cfg.method == "retain_only":
-            # With 'retain' method, only condider loss on the retain batch, this isn't unlearning, just conservative baseline finetuning on data 'to-be-remembered', no explicit forgetting here
-            loss = F.cross_entropy(logits_r, batch_r["labels"])
-        else:
-            with torch.no_grad():
-                t_logits_r = teacher.class_logits(
-                    pixel_values=batch_r["pixel_values"],
-                    class_input_ids=class_text_inputs["input_ids"],
-                    class_attention_mask=class_text_inputs["attention_mask"],
-                )
-            retain_kl = _kl_div(logits_r, t_logits_r, cfg.kl_temperature)
-            # Forgetting
-            batch_f = next(forget_iter)
-            batch_f = {k: v.to(device) for k, v in batch_f.items()}
-            logits_f = model.class_logits(
-                pixel_values=batch_f["pixel_values"],
+        with precision_context(model.cfg.precision, device):
+            logits_r = model.class_logits(
+                pixel_values=batch_r["pixel_values"],
                 class_input_ids=class_text_inputs["input_ids"],
                 class_attention_mask=class_text_inputs["attention_mask"],
             )
+            if cfg.method == "retain_only":
+                loss = F.cross_entropy(logits_r, batch_r["labels"])
+            else:
+                with torch.no_grad():
+                    t_logits_r = teacher.class_logits(
+                        pixel_values=batch_r["pixel_values"],
+                        class_input_ids=class_text_inputs["input_ids"],
+                        class_attention_mask=class_text_inputs["attention_mask"],
+                    )
+                retain_kl = _kl_div(logits_r, t_logits_r, cfg.kl_temperature)
+                batch_f = next(forget_iter)
+                batch_f = {k: v.to(device) for k, v in batch_f.items()}
+                logits_f = model.class_logits(
+                    pixel_values=batch_f["pixel_values"],
+                    class_input_ids=class_text_inputs["input_ids"],
+                    class_attention_mask=class_text_inputs["attention_mask"],
+                )
 
-            if cfg.method == "ga_kl":
+            if cfg.method == "retain_only":
+                pass
+            elif cfg.method == "ga_kl":
                 # Gradient Ascent (GA) with KL divergence:
                 # GA to maximize loss on the forget data while using KL div to make sure the model doesnt stray from the teacher
                 forget_term = -F.cross_entropy(logits_f, batch_f["labels"]) # negation reverses the minimization and model is encouraged to become worse at predicting 
@@ -252,6 +254,7 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
             "class_names": class_names,
             "finetuned_checkpoint": cfg.finetuned_checkpoint,
             "finetune_meta": finetune_meta,
+            "architecture": model.architecture_summary(),
             "metrics": summary_metrics,
         },
     )

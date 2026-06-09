@@ -14,7 +14,8 @@ This creates a controllable forgetting mechanism that is stronger than retain-on
 
 ## Project structure
 - `src/unml/data.py`: dataset pull + split creation + dataloaders
-- `src/unml/model.py`: frozen CLIP backbone + lightweight low-rank adapters
+- `src/unml/model.py`: frozen CLIP backbone + post-projection adapters or
+  internal vision LoRA
 - `src/unml/train.py`: finetuning pipeline
 - `src/unml/unlearn.py`: unlearning methods
 - `src/unml/attacks.py`: membership-inference attacks + tradeoff plot/report
@@ -46,6 +47,17 @@ data:
 The corresponding profile supplies its forget classes and fraction. CIFAR-10
 uses cat/dog (`3,5`). CIFAR-100 uses five flower classes
 (`54,62,70,82,92`).
+
+The same switch selects the model architecture:
+
+- CIFAR-10: CLIP ViT-B/32 with the historical image/text post-projection
+  adapters.
+- CIFAR-100: CLIP ViT-B/16 with rank-8 LoRA on `q_proj` and `v_proj` in all
+  12 vision blocks (24 adapted projections).
+
+The CIFAR-100 profile keeps the text encoder and original CLIP weights frozen,
+uses BF16 and vision gradient checkpointing, and trains with batch size 64 plus
+two-step accumulation for effective batch size 128.
 
 For CIFAR-100, select the deletion request in the same profile:
 
@@ -109,8 +121,12 @@ Forgetting quality combines:
 - Resistance to both attacks (AUC close to 0.5 is better).
 
 ## Notes
-- Backbone: `openai/clip-vit-base-patch32` (frozen).
-- Trainable params: low-rank adapters on image/text embeddings + optional logit scale.
+- CIFAR-10 backbone: `openai/clip-vit-base-patch32` (frozen).
+- CIFAR-100 backbone: `openai/clip-vit-base-patch16` with vision-only LoRA.
+- Checkpoints save adapter/LoRA state and configuration, not frozen CLIP
+  weights.
+- CIFAR-100 fine-tuning metrics record runtime, throughput, and peak allocated
+  GPU memory for the required Sharanga benchmark.
 - Split files record the dataset and class vocabulary used by downstream stages.
 - Split/checkpoint dataset mismatches are rejected before an experiment runs.
 - This makes training lightweight and unlearning iterations fast.

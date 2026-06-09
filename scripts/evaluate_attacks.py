@@ -20,6 +20,7 @@ from unml.config import (
     load_runtime_config,
     resolve_data_dir,
     resolve_dataset_and_split_path,
+    resolve_model_value,
     resolve_stage_output_dir,
     resolve_str_list,
     resolve_value,
@@ -104,10 +105,11 @@ def main() -> None:
         data_dir=str(resolve_data_dir(args.data_dir, runtime_cfg)),
         split_path=split_path,
         dataset_name=dataset_name,
-        model_name=resolve_value(
+        model_name=resolve_model_value(
             args.model_name,
             runtime_cfg,
-            ("model", "model_name"),
+            dataset_name,
+            "model_name",
             "openai/clip-vit-base-patch32",
         ),
         base_checkpoint=resolve_value(
@@ -139,10 +141,11 @@ def main() -> None:
                 args.request,
             )
         ),
-        prompt_template=resolve_value(
+        prompt_template=resolve_model_value(
             args.prompt_template,
             runtime_cfg,
-            ("model", "prompt_template"),
+            dataset_name,
+            "prompt_template",
             "a photo of a {}",
         ),
         batch_size=resolve_value(

@@ -17,8 +17,10 @@ from unml.config import (
     resolve_dataset_and_split_path,
     resolve_dataset_value,
     resolve_forget_classes,
+    resolve_model_value,
     resolve_output_root,
     resolve_request_name,
+    resolve_section_value,
     resolve_str_list,
     resolve_value,
 )
@@ -85,10 +87,11 @@ def main() -> None:
     )
 
     data_dir = str(resolve_data_dir(args.data_dir, runtime_cfg))
-    model_name = resolve_value(
+    model_name = resolve_model_value(
         args.model_name,
         runtime_cfg,
-        ("model", "model_name"),
+        dataset_name,
+        "model_name",
         "openai/clip-vit-base-patch32",
     )
     forget_classes = resolve_forget_classes(
@@ -101,8 +104,13 @@ def main() -> None:
         "forget_fraction",
         1.0,
     )
-    ft_batch_size = resolve_value(
-        args.batch_size, runtime_cfg, ("training", "batch_size"), 128
+    ft_batch_size = resolve_section_value(
+        args.batch_size,
+        runtime_cfg,
+        dataset_name,
+        "training",
+        "batch_size",
+        128,
     )
     ft_num_workers = resolve_value(
         args.num_workers, runtime_cfg, ("training", "num_workers"), 4
@@ -110,6 +118,14 @@ def main() -> None:
     ft_epochs = resolve_value(args.ft_epochs, runtime_cfg, ("training", "epochs"), 10)
     ft_max_steps = resolve_value(
         args.ft_max_steps, runtime_cfg, ("training", "max_train_steps"), -1
+    )
+    ft_gradient_accumulation_steps = resolve_section_value(
+        None,
+        runtime_cfg,
+        dataset_name,
+        "training",
+        "gradient_accumulation_steps",
+        1,
     )
     ul_batch_size = resolve_value(
         args.batch_size, runtime_cfg, ("unlearning", "batch_size"), 128
@@ -147,6 +163,11 @@ def main() -> None:
         print(f"split_path={split_path}")
         print(f"forget_classes={forget_classes}")
         print(f"forget_fraction={forget_fraction}")
+        print(f"model_name={model_name}")
+        print(
+            "adapter_type="
+            f"{resolve_model_value(None, runtime_cfg, dataset_name, 'adapter_type', 'post_projection')}"
+        )
         print(f"output_root={output_root}")
         print(f"finetune_dir={finetune_dir}")
         print(f"unlearning_dir={unlearn_dir}")
@@ -202,6 +223,8 @@ def main() -> None:
             model_name,
             "--batch-size",
             str(ft_batch_size),
+            "--gradient-accumulation-steps",
+            str(ft_gradient_accumulation_steps),
             "--num-workers",
             str(ft_num_workers),
             "--epochs",

@@ -20,6 +20,7 @@ from unml.config import (
     load_runtime_config,
     resolve_data_dir,
     resolve_dataset_and_split_path,
+    resolve_model_value,
     resolve_stage_output_dir,
     resolve_str_list,
     resolve_value,
@@ -111,16 +112,18 @@ def main() -> None:
             args.method, runtime_cfg, ("unlearning", "method"), default_method
         ),
         dataset_name=dataset_name,
-        model_name=resolve_value(
+        model_name=resolve_model_value(
             args.model_name,
             runtime_cfg,
-            ("model", "model_name"),
+            dataset_name,
+            "model_name",
             "openai/clip-vit-base-patch32",
         ),
-        prompt_template=resolve_value(
+        prompt_template=resolve_model_value(
             args.prompt_template,
             runtime_cfg,
-            ("model", "prompt_template"),
+            dataset_name,
+            "prompt_template",
             "a photo of a {}",
         ),
         batch_size=resolve_value(
@@ -156,6 +159,13 @@ def main() -> None:
         margin=resolve_value(args.margin, runtime_cfg, ("unlearning", "margin"), 0.2),
         entropy_weight=resolve_value(
             args.entropy_weight, runtime_cfg, ("unlearning", "entropy_weight"), 1.0
+        ),
+        train_logit_scale=resolve_model_value(
+            None,
+            runtime_cfg,
+            dataset_name,
+            "train_logit_scale_during_unlearning",
+            True,
         ),
     )
     result = run_unlearning(cfg)

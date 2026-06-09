@@ -13,7 +13,9 @@ from unml.config import (
     resolve_dataset_and_split_path,
     resolve_dataset_value,
     resolve_forget_classes,
+    resolve_model_value,
     resolve_output_root,
+    resolve_section_value,
     resolve_stage_output_dir,
 )
 from unml.data import (
@@ -127,6 +129,40 @@ def test_parameters_yaml_switches_complete_dataset_profile(monkeypatch) -> None:
             None, payload, rose_dataset, "rose_selective"
         )
         == "70"
+    )
+    assert (
+        resolve_model_value(
+            None, payload, dataset_name, "model_name", "fallback"
+        )
+        == "openai/clip-vit-base-patch16"
+    )
+    assert (
+        resolve_model_value(
+            None, payload, dataset_name, "adapter_type", "fallback"
+        )
+        == "vision_lora"
+    )
+    assert (
+        resolve_section_value(
+            None,
+            payload,
+            dataset_name,
+            "training",
+            "batch_size",
+            128,
+        )
+        == 64
+    )
+    assert (
+        resolve_section_value(
+            None,
+            payload,
+            dataset_name,
+            "training",
+            "gradient_accumulation_steps",
+            1,
+        )
+        == 2
     )
 
 
