@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict
+from typing import Any, Dict, Sequence
 
 import numpy as np
 import torch
@@ -67,7 +67,7 @@ def evaluate_classification(
 
 
 @torch.no_grad()
-def collect_true_class_confidences(
+def collect_classification_outputs(
     model,
     loader: DataLoader,
     class_text_inputs: Dict[str, torch.Tensor],
@@ -75,41 +75,112 @@ def collect_true_class_confidences(
     max_samples: int | None = None,
     class_text_features: torch.Tensor | None = None,
     non_blocking: bool = False,
-):
+) -> Dict[str, np.ndarray | float]:
     model.eval()
     if class_text_features is None:
         class_text_features = build_class_text_features(
             model, class_text_inputs, device
         )
-    scores = []
     labels_all = []
+    predictions_all = []
     indices_all = []
+    true_scores_all = []
+    losses = []
+    collected = 0
     for batch in loader:
         batch = move_to_device(batch, device, non_blocking=non_blocking)
         logits = model.class_logits_from_text_features(
             pixel_values=batch["pixel_values"],
             class_text_features=class_text_features,
         )
-        probs = logits.softmax(dim=-1)
         labels = batch["labels"]
-        true_scores = probs.gather(1, labels.unsqueeze(1)).squeeze(1)
-        scores.append(true_scores.detach().cpu())
+        probabilities = logits.softmax(dim=-1)
         labels_all.append(labels.detach().cpu())
+        predictions_all.append(logits.argmax(dim=-1).detach().cpu())
         indices_all.append(batch["indices"].detach().cpu())
-
-        if max_samples is not None and sum(t.shape[0] for t in scores) >= max_samples:
+        true_scores_all.append(
+            probabilities.gather(1, labels.unsqueeze(1)).squeeze(1).detach().cpu()
+        )
+        losses.append(
+            F.cross_entropy(logits, labels, reduction="none").detach().cpu()
+        )
+        collected += int(labels.numel())
+        if max_samples is not None and collected >= max_samples:
             break
 
-    score_tensor = torch.cat(scores, dim=0)
-    label_tensor = torch.cat(labels_all, dim=0)
-    index_tensor = torch.cat(indices_all, dim=0)
-    if max_samples is not None:
-        score_tensor = score_tensor[:max_samples]
-        label_tensor = label_tensor[:max_samples]
-        index_tensor = index_tensor[:max_samples]
+    if not labels_all:
+        return {
+            "labels": np.empty(0, dtype=np.int64),
+            "predictions": np.empty(0, dtype=np.int64),
+            "indices": np.empty(0, dtype=np.int64),
+            "true_scores": np.empty(0, dtype=np.float32),
+            "loss": 0.0,
+        }
 
+    labels = torch.cat(labels_all)
+    predictions = torch.cat(predictions_all)
+    indices = torch.cat(indices_all)
+    true_scores = torch.cat(true_scores_all)
+    sample_losses = torch.cat(losses)
+    if max_samples is not None:
+        labels = labels[:max_samples]
+        predictions = predictions[:max_samples]
+        indices = indices[:max_samples]
+        true_scores = true_scores[:max_samples]
+        sample_losses = sample_losses[:max_samples]
     return {
-        "scores": np.asarray(score_tensor.tolist(), dtype=np.float32),
-        "labels": np.asarray(label_tensor.tolist(), dtype=np.int64),
-        "indices": np.asarray(index_tensor.tolist(), dtype=np.int64),
+        "labels": labels.numpy().astype(np.int64, copy=False),
+        "predictions": predictions.numpy().astype(np.int64, copy=False),
+        "indices": indices.numpy().astype(np.int64, copy=False),
+        "true_scores": true_scores.numpy().astype(np.float32, copy=False),
+        "loss": float(sample_losses.mean().item()),
+    }
+
+
+def summarize_classification_group(
+    outputs: Dict[str, np.ndarray | float],
+    class_ids: Sequence[int],
+    num_classes: int,
+) -> Dict[str, Any]:
+    labels = np.asarray(outputs["labels"], dtype=np.int64)
+    predictions = np.asarray(outputs["predictions"], dtype=np.int64)
+    selected_classes = sorted(set(int(class_id) for class_id in class_ids))
+    mask = np.isin(labels, selected_classes)
+    selected_labels = labels[mask]
+    selected_predictions = predictions[mask]
+
+    confusion = np.zeros((num_classes, num_classes), dtype=np.int64)
+    if selected_labels.size:
+        np.add.at(confusion, (selected_labels, selected_predictions), 1)
+
+    per_class = []
+    class_accuracies = []
+    for class_id in selected_classes:
+        class_mask = selected_labels == class_id
+        count = int(class_mask.sum())
+        correct = int(
+            (selected_predictions[class_mask] == class_id).sum()
+        )
+        accuracy = correct / count if count else None
+        if accuracy is not None:
+            class_accuracies.append(accuracy)
+        per_class.append(
+            {
+                "class_id": class_id,
+                "n": count,
+                "correct": correct,
+                "accuracy": accuracy,
+            }
+        )
+
+    total = int(selected_labels.size)
+    correct = int((selected_labels == selected_predictions).sum())
+    return {
+        "n": total,
+        "accuracy": correct / total if total else None,
+        "macro_accuracy": (
+            float(np.mean(class_accuracies)) if class_accuracies else None
+        ),
+        "per_class": per_class,
+        "confusion_matrix": confusion,
     }

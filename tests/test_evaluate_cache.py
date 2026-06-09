@@ -3,7 +3,10 @@ from __future__ import annotations
 import torch
 from torch.utils.data import DataLoader
 
-from unml.evaluate import evaluate_classification
+from unml.evaluate import (
+    collect_classification_outputs,
+    evaluate_classification,
+)
 
 
 class CountingModel:
@@ -52,3 +55,33 @@ def test_evaluation_encodes_class_text_once_for_multiple_batches() -> None:
 
     assert model.text_encode_calls == 1
     assert metrics["n"] == 4.0
+
+
+def test_collected_outputs_include_index_aligned_predictions_and_scores() -> None:
+    model = CountingModel()
+    samples = [
+        {
+            "pixel_values": torch.tensor([1.0, 0.0]),
+            "labels": torch.tensor(0),
+            "indices": torch.tensor(index),
+        }
+        for index in (7, 3, 9)
+    ]
+    loader = DataLoader(samples, batch_size=2)
+    class_text_inputs = {
+        "input_ids": torch.ones((2, 3), dtype=torch.long),
+        "attention_mask": torch.ones((2, 3), dtype=torch.long),
+    }
+
+    outputs = collect_classification_outputs(
+        model,
+        loader,
+        class_text_inputs,
+        torch.device("cpu"),
+        max_samples=2,
+    )
+
+    assert outputs["indices"].tolist() == [7, 3]
+    assert outputs["labels"].tolist() == [0, 0]
+    assert outputs["predictions"].tolist() == [0, 0]
+    assert outputs["true_scores"].shape == (2,)

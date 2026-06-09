@@ -171,6 +171,22 @@ Forgetting quality combines:
 - Forget-set accuracy drop.
 - Resistance to both attacks (AUC close to 0.5 is better).
 
+Evaluation is hierarchy-aware for both datasets. Each candidate is evaluated
+once on the complete test set and once on forget-training samples. The same
+outputs produce:
+
+- target test micro/macro accuracy;
+- sibling test micro/macro accuracy (`N/A` when no sibling group exists);
+- unrelated-retain micro/macro accuracy;
+- overall and retain accuracy;
+- full per-class accuracy and confusion CSVs;
+- a compact target/sibling/unrelated confusion CSV;
+- confidence and delta-to-base MIA.
+
+Delta-MIA scores are aligned by dataset index before subtraction, so shuffled
+forget loaders cannot compare different samples. Base-model outputs are
+computed once and reused across all candidate checkpoints.
+
 ## Notes
 - CIFAR-10 backbone: `openai/clip-vit-base-patch32` (frozen).
 - CIFAR-100 backbone: `openai/clip-vit-base-patch16` with vision-only LoRA.

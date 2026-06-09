@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Sequence
+from typing import Any, Dict, List, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -20,8 +22,8 @@ from .data import (
 )
 from .evaluate import (
     build_class_text_features,
-    collect_true_class_confidences,
-    evaluate_classification,
+    collect_classification_outputs,
+    summarize_classification_group,
 )
 from .model import load_checkpoint
 from helpers.tracker import update_unlearn_with_attacks
@@ -93,92 +95,311 @@ def _mia_metrics(member_current: np.ndarray, nonmember_current: np.ndarray, memb
     }
 
 
+def _group_classes(
+    split: Dict[str, Any], num_classes: int
+) -> Dict[str, list[int]]:
+    target = sorted(
+        set(split.get("target_classes", split.get("forget_classes", [])))
+    )
+    sibling = sorted(set(split.get("sibling_classes", [])))
+    unrelated = sorted(set(split.get("unrelated_classes", [])))
+    if not unrelated:
+        unrelated = sorted(set(range(num_classes)) - set(target) - set(sibling))
+    if not target:
+        raise ValueError("Evaluation requires at least one target class")
+    named_groups = {
+        "target": set(target),
+        "sibling": set(sibling),
+        "unrelated": set(unrelated),
+    }
+    for group_name, class_ids in named_groups.items():
+        invalid = sorted(
+            class_id
+            for class_id in class_ids
+            if class_id < 0 or class_id >= num_classes
+        )
+        if invalid:
+            raise ValueError(
+                f"{group_name} classes outside [0, {num_classes - 1}]: "
+                f"{invalid}"
+            )
+    for left, right in (
+        ("target", "sibling"),
+        ("target", "unrelated"),
+        ("sibling", "unrelated"),
+    ):
+        overlap = sorted(named_groups[left] & named_groups[right])
+        if overlap:
+            raise ValueError(
+                f"Evaluation class groups {left}/{right} overlap: {overlap}"
+            )
+    missing = sorted(set(range(num_classes)) - set().union(*named_groups.values()))
+    if missing:
+        raise ValueError(
+            f"Evaluation class groups do not cover classes: {missing}"
+        )
+    return {
+        "target": target,
+        "sibling": sibling,
+        "unrelated": unrelated,
+        "retain": sorted(set(sibling) | set(unrelated)),
+        "all": list(range(num_classes)),
+    }
+
+
+def _validate_candidates(
+    names: Sequence[str], checkpoints: Sequence[str]
+) -> None:
+    if len(names) != len(checkpoints):
+        raise ValueError(
+            "candidate_names and candidate_checkpoints must have equal length"
+        )
+    if not names:
+        raise ValueError("At least one candidate checkpoint is required")
+    duplicates = sorted(
+        {name for name in names if list(names).count(name) > 1}
+    )
+    if duplicates:
+        raise ValueError(f"Candidate names must be unique: {duplicates}")
+
+
+def _reference_outputs(
+    model,
+    loaders: Dict[str, DataLoader],
+    class_text_inputs: Dict[str, torch.Tensor],
+    device: torch.device,
+    non_blocking: bool,
+) -> Dict[str, Dict[str, np.ndarray | float]]:
+    text_features = build_class_text_features(model, class_text_inputs, device)
+    common = {
+        "class_text_inputs": class_text_inputs,
+        "device": device,
+        "class_text_features": text_features,
+        "non_blocking": non_blocking,
+    }
+    return {
+        "test_all": collect_classification_outputs(
+            model, loaders["test_all"], **common
+        ),
+        "forget_train": collect_classification_outputs(
+            model, loaders["forget"], **common
+        ),
+    }
+
+
+def _aligned_score_pairs(
+    current: Dict[str, np.ndarray | float],
+    reference: Dict[str, np.ndarray | float],
+    class_ids: Sequence[int],
+    max_samples: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    selected = set(int(class_id) for class_id in class_ids)
+    reference_scores = {
+        int(index): float(score)
+        for index, label, score in zip(
+            np.asarray(reference["indices"], dtype=np.int64),
+            np.asarray(reference["labels"], dtype=np.int64),
+            np.asarray(reference["true_scores"], dtype=np.float32),
+        )
+        if int(label) in selected
+    }
+    current_values = []
+    reference_values = []
+    for index, label, score in zip(
+        np.asarray(current["indices"], dtype=np.int64),
+        np.asarray(current["labels"], dtype=np.int64),
+        np.asarray(current["true_scores"], dtype=np.float32),
+    ):
+        if int(label) not in selected or int(index) not in reference_scores:
+            continue
+        current_values.append(float(score))
+        reference_values.append(reference_scores[int(index)])
+        if len(current_values) >= max_samples:
+            break
+    return (
+        np.asarray(current_values, dtype=np.float32),
+        np.asarray(reference_values, dtype=np.float32),
+    )
+
+
 def _evaluate_model(
     model,
-    base_model,
     loaders: Dict[str, DataLoader],
     class_text_inputs: Dict[str, torch.Tensor],
     device: torch.device,
     max_attack_samples: int,
+    class_groups: Dict[str, list[int]],
+    class_names: Sequence[str],
+    base_outputs: Dict[str, Dict[str, np.ndarray | float]],
     non_blocking: bool = False,
-) -> Dict[str, float]:
+) -> tuple[Dict[str, float | int | None], Dict[str, Any]]:
     model_text_features = build_class_text_features(
         model, class_text_inputs, device
     )
-    base_text_features = build_class_text_features(
-        base_model, class_text_inputs, device
-    )
-    model_eval_args = {
+    common = {
         "class_text_inputs": class_text_inputs,
         "device": device,
         "class_text_features": model_text_features,
         "non_blocking": non_blocking,
     }
-    util_test_all = evaluate_classification(
-        model, loaders["test_all"], **model_eval_args
+    test_outputs = collect_classification_outputs(
+        model, loaders["test_all"], **common
     )
-    util_test_retain = evaluate_classification(
-        model, loaders["test_retain"], **model_eval_args
-    )
-    forget_train = evaluate_classification(
-        model, loaders["forget"], **model_eval_args
-    )
-
-    member = collect_true_class_confidences(
+    forget_outputs = collect_classification_outputs(
         model,
         loaders["forget"],
-        class_text_inputs,
-        device,
-        max_samples=max_attack_samples,
-        class_text_features=model_text_features,
-        non_blocking=non_blocking,
+        **common,
     )
-    nonmember = collect_true_class_confidences(
-        model,
-        loaders["test_forget"],
-        class_text_inputs,
-        device,
-        max_samples=max_attack_samples,
-        class_text_features=model_text_features,
-        non_blocking=non_blocking,
+    num_classes = len(class_names)
+    groups = {
+        group_name: summarize_classification_group(
+            test_outputs, class_ids, num_classes
+        )
+        for group_name, class_ids in class_groups.items()
+    }
+    forget_train = summarize_classification_group(
+        forget_outputs, class_groups["target"], num_classes
     )
-
-    member_base = collect_true_class_confidences(
-        base_model,
-        loaders["forget"],
-        class_text_inputs,
-        device,
-        max_samples=max_attack_samples,
-        class_text_features=base_text_features,
-        non_blocking=non_blocking,
+    member, member_base = _aligned_score_pairs(
+        forget_outputs,
+        base_outputs["forget_train"],
+        class_groups["target"],
+        max_attack_samples,
     )
-    nonmember_base = collect_true_class_confidences(
-        base_model,
-        loaders["test_forget"],
-        class_text_inputs,
-        device,
-        max_samples=max_attack_samples,
-        class_text_features=base_text_features,
-        non_blocking=non_blocking,
+    nonmember, nonmember_base = _aligned_score_pairs(
+        test_outputs,
+        base_outputs["test_all"],
+        class_groups["target"],
+        max_attack_samples,
     )
+    attack_count = min(len(member), len(nonmember))
 
     attacks = _mia_metrics(
-        member_current=member["scores"],
-        nonmember_current=nonmember["scores"],
-        member_base=member_base["scores"],
-        nonmember_base=nonmember_base["scores"],
+        member_current=member[:attack_count],
+        nonmember_current=nonmember[:attack_count],
+        member_base=member_base[:attack_count],
+        nonmember_base=nonmember_base[:attack_count],
     )
 
-    forget_drop = max(0.0, 1.0 - forget_train["accuracy"])
+    forget_train_accuracy = float(forget_train["accuracy"] or 0.0)
+    forget_drop = max(0.0, 1.0 - forget_train_accuracy)
     forget_quality = (forget_drop + attacks["mia_resistance_confidence"] + attacks["mia_resistance_delta"]) / 3.0
 
-    return {
-        "utility_test_all": util_test_all["accuracy"],
-        "utility_test_retain": util_test_retain["accuracy"],
-        "forget_train_acc": forget_train["accuracy"],
+    scalar_metrics = {
+        "utility_test_all": groups["all"]["accuracy"],
+        "utility_test_retain": groups["retain"]["accuracy"],
+        "target_test_acc": groups["target"]["accuracy"],
+        "target_test_macro_acc": groups["target"]["macro_accuracy"],
+        "target_test_n": groups["target"]["n"],
+        "sibling_test_acc": groups["sibling"]["accuracy"],
+        "sibling_test_macro_acc": groups["sibling"]["macro_accuracy"],
+        "sibling_test_n": groups["sibling"]["n"],
+        "unrelated_test_acc": groups["unrelated"]["accuracy"],
+        "unrelated_test_macro_acc": groups["unrelated"]["macro_accuracy"],
+        "unrelated_test_n": groups["unrelated"]["n"],
+        "forget_train_acc": forget_train_accuracy,
         "forget_drop": forget_drop,
         "forget_quality": forget_quality,
         **attacks,
+    }
+    details = {
+        "class_names": list(class_names),
+        "class_groups": class_groups,
+        "groups": groups,
+        "forget_train": forget_train,
+        "mia_sample_count": attack_count,
+    }
+    return scalar_metrics, details
+
+
+def _safe_artifact_name(name: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("._")
+    return normalized or "model"
+
+
+def _write_hierarchy_artifacts(
+    output_dir: Path,
+    model_name: str,
+    details: Dict[str, Any],
+) -> Dict[str, str]:
+    artifact_name = _safe_artifact_name(model_name)
+    hierarchy_dir = output_dir / "hierarchy"
+    hierarchy_dir.mkdir(parents=True, exist_ok=True)
+    class_names = details["class_names"]
+    all_group = details["groups"]["all"]
+    confusion = np.asarray(all_group["confusion_matrix"], dtype=np.int64)
+
+    class_group_lookup = {}
+    for group_name in ("target", "sibling", "unrelated"):
+        for class_id in details["class_groups"][group_name]:
+            class_group_lookup[int(class_id)] = group_name
+    per_class_rows = []
+    for row in all_group["per_class"]:
+        class_id = int(row["class_id"])
+        per_class_rows.append(
+            {
+                **row,
+                "class_name": class_names[class_id],
+                "group": class_group_lookup.get(class_id, "other"),
+            }
+        )
+
+    per_class_path = hierarchy_dir / f"{artifact_name}_per_class.csv"
+    confusion_path = hierarchy_dir / f"{artifact_name}_confusion.csv"
+    group_confusion_path = (
+        hierarchy_dir / f"{artifact_name}_group_confusion.csv"
+    )
+    metrics_path = hierarchy_dir / f"{artifact_name}_groups.json"
+    pd.DataFrame(per_class_rows).to_csv(per_class_path, index=False)
+    pd.DataFrame(
+        confusion,
+        index=class_names,
+        columns=class_names,
+    ).rename_axis("actual").to_csv(confusion_path)
+    hierarchy_group_names = ["target", "sibling", "unrelated"]
+    group_confusion = np.zeros((3, 3), dtype=np.int64)
+    for actual_index, actual_group in enumerate(hierarchy_group_names):
+        actual_classes = details["class_groups"][actual_group]
+        for predicted_index, predicted_group in enumerate(
+            hierarchy_group_names
+        ):
+            predicted_classes = details["class_groups"][predicted_group]
+            if actual_classes and predicted_classes:
+                group_confusion[actual_index, predicted_index] = int(
+                    confusion[np.ix_(actual_classes, predicted_classes)].sum()
+                )
+    pd.DataFrame(
+        group_confusion,
+        index=hierarchy_group_names,
+        columns=hierarchy_group_names,
+    ).rename_axis("actual_group").to_csv(group_confusion_path)
+    serializable_groups = {}
+    for group_name, group in details["groups"].items():
+        serializable_groups[group_name] = {
+            key: (
+                value.tolist()
+                if isinstance(value, np.ndarray)
+                else value
+            )
+            for key, value in group.items()
+        }
+    with metrics_path.open("w", encoding="utf-8") as handle:
+        json.dump(
+            {
+                "model": model_name,
+                "class_names": class_names,
+                "class_groups": details["class_groups"],
+                "groups": serializable_groups,
+                "mia_sample_count": details["mia_sample_count"],
+            },
+            handle,
+            indent=2,
+        )
+    return {
+        "per_class_path": str(per_class_path),
+        "confusion_path": str(confusion_path),
+        "group_confusion_path": str(group_confusion_path),
+        "group_metrics_path": str(metrics_path),
     }
 
 
@@ -198,12 +419,13 @@ def _plot_tradeoff(df: pd.DataFrame, out_path: str) -> None:
     plt.close(fig)
 
 
-def run_attack_comparison(cfg: AttackConfig) -> Dict[str, str]:
+def run_attack_comparison(cfg: AttackConfig) -> Dict[str, Any]:
+    _validate_candidates(cfg.candidate_names, cfg.candidate_checkpoints)
     device = get_device(cfg.device)
 
     image_processor = CLIPImageProcessor.from_pretrained(cfg.model_name)
     tokenizer = CLIPTokenizer.from_pretrained(cfg.model_name)
-    _, dataset_spec, class_names = load_split_metadata(
+    split, dataset_spec, class_names = load_split_metadata(
         cfg.split_path, cfg.dataset_name
     )
     class_text_inputs = build_text_inputs(
@@ -228,29 +450,44 @@ def run_attack_comparison(cfg: AttackConfig) -> Dict[str, str]:
     base_model, base_meta = load_checkpoint(cfg.base_checkpoint, map_location=device)
     validate_checkpoint_dataset(base_meta, dataset_spec.name, cfg.base_checkpoint)
     base_model = base_model.to(device).eval()
+    class_groups = _group_classes(split, len(class_names))
+    base_outputs = _reference_outputs(
+        base_model,
+        loaders,
+        class_text_inputs,
+        device,
+        cfg.non_blocking,
+    )
 
-    records: List[Dict[str, float | str]] = []
+    output_dir = Path(cfg.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    records: List[Dict[str, float | int | str | None]] = []
+    hierarchy_artifacts = {}
     for name, ckpt_path in zip(cfg.candidate_names, cfg.candidate_checkpoints):
         model, meta = load_checkpoint(ckpt_path, map_location=device)
         validate_checkpoint_dataset(meta, dataset_spec.name, ckpt_path)
         model = model.to(device).eval()
 
-        metrics = _evaluate_model(
+        metrics, details = _evaluate_model(
             model=model,
-            base_model=base_model,
             loaders=loaders,
             class_text_inputs=class_text_inputs,
             device=device,
             max_attack_samples=cfg.max_attack_samples,
+            class_groups=class_groups,
+            class_names=class_names,
+            base_outputs=base_outputs,
             non_blocking=cfg.non_blocking,
+        )
+        hierarchy_artifacts[name] = _write_hierarchy_artifacts(
+            output_dir, name, details
         )
         records.append({"model": name, "checkpoint": ckpt_path, **metrics, "meta": str(meta)})
         update_unlearn_with_attacks(name, metrics)
 
     df = pd.DataFrame(records).sort_values(by=["forget_quality", "utility_test_retain"], ascending=False)
 
-    output_dir = Path(cfg.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
     csv_path = output_dir / "comparison.csv"
     md_path = output_dir / "comparison.md"
     plot_path = output_dir / "utility_vs_forget.png"
@@ -263,6 +500,12 @@ def run_attack_comparison(cfg: AttackConfig) -> Dict[str, str]:
             "model",
             "utility_test_retain",
             "utility_test_all",
+            "target_test_acc",
+            "target_test_macro_acc",
+            "sibling_test_acc",
+            "sibling_test_macro_acc",
+            "unrelated_test_acc",
+            "unrelated_test_macro_acc",
             "forget_train_acc",
             "forget_quality",
             "mia_auc_confidence",
@@ -277,5 +520,6 @@ def run_attack_comparison(cfg: AttackConfig) -> Dict[str, str]:
         "csv_path": str(csv_path),
         "markdown_path": str(md_path),
         "plot_path": str(plot_path),
+        "hierarchy_artifacts": hierarchy_artifacts,
         "best_model": str(best_row.get("model", "")),
     }
