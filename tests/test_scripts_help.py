@@ -24,3 +24,20 @@ def test_script_help_runs(script_path: str) -> None:
 
     assert proc.returncode == 0
     assert "usage:" in proc.stdout.lower()
+
+
+def test_pipeline_show_config_does_not_start_pipeline() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    cmd = [
+        sys.executable,
+        str(repo_root / "scripts/run_pipeline.py"),
+        "--show-config",
+    ]
+    proc = subprocess.run(
+        cmd, capture_output=True, text=True, check=False, cwd=repo_root
+    )
+
+    assert proc.returncode == 0
+    assert "dataset=cifar10" in proc.stdout
+    assert "output_root=outputs/cifar10" in proc.stdout
+    assert "[cmd]" not in proc.stdout

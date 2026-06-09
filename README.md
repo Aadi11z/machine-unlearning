@@ -1,7 +1,7 @@
 # Lightweight VLM Machine Unlearning Pipeline
 
 End-to-end project for machine unlearning on a lightweight vision-language model (VLM):
-1. Pull CIFAR-10 and create retain/forget splits.
+1. Pull CIFAR-10 or CIFAR-100 and create retain/forget splits.
 2. Fine-tune a lightweight CLIP adapter model.
 3. Unlearn using multiple methods.
 4. Run membership-inference attacks and compare model utility and forget quality.
@@ -34,82 +34,52 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Quick run (full pipeline)
-```bash
-python scripts/run_pipeline.py \
-  --data-dir data \
-  --split-path outputs/splits/cifar10_split.json \
-  --forget-classes 3,5 \
-  --ft-epochs 3 \
-  --ul-steps 200 \
-  --batch-size 128 \
-  --device auto
+## Config-Driven Run
+
+Select the dataset by changing one field in `config/parameters.yaml`:
+
+```yaml
+data:
+  dataset: cifar10  # change to cifar100
 ```
 
-Outputs:
-- `outputs/finetune/checkpoints/base_init.pt`
-- `outputs/finetune/checkpoints/finetuned_best.pt`
-- `outputs/unlearning/checkpoints/unlearn_<method>.pt`
-- `outputs/comparison/comparison.csv`
-- `outputs/comparison/comparison.md`
-- `outputs/comparison/utility_vs_forget.png`
+The corresponding profile supplies its forget classes and fraction. CIFAR-10
+uses cat/dog (`3,5`). CIFAR-100 uses five flower classes
+(`54,62,70,82,92`).
 
-## Step-by-step commands
+Inspect the resolved run without starting any work:
 
-### 1) Pull dataset and create splits
 ```bash
-python scripts/prepare_data.py \
-  --data-dir data \
-  --split-path outputs/splits/cifar10_split.json \
-  --forget-classes 3,5 \
-  --forget-fraction 1.0
+python scripts/run_pipeline.py --show-config
 ```
 
-### 2) Fine-tune lightweight VLM adapters
+Run the complete configured pipeline:
+
 ```bash
-python scripts/train_vlm.py \
-  --data-dir data \
-  --split-path outputs/splits/cifar10_split.json \
-  --output-dir outputs/finetune \
-  --epochs 5 \
-  --batch-size 128
+python scripts/run_pipeline.py
 ```
 
-### 3) Run unlearning methods
-```bash
-python scripts/run_unlearning.py \
-  --data-dir data \
-  --split-path outputs/splits/cifar10_split.json \
-  --finetuned-checkpoint outputs/finetune/checkpoints/finetuned_best.pt \
-  --output-dir outputs/unlearning \
-  --method retain_only
+Artifacts remain isolated:
 
-python scripts/run_unlearning.py \
-  --data-dir data \
-  --split-path outputs/splits/cifar10_split.json \
-  --finetuned-checkpoint outputs/finetune/checkpoints/finetuned_best.pt \
-  --output-dir outputs/unlearning \
-  --method ga_kl
-
-python scripts/run_unlearning.py \
-  --data-dir data \
-  --split-path outputs/splits/cifar10_split.json \
-  --finetuned-checkpoint outputs/finetune/checkpoints/finetuned_best.pt \
-  --output-dir outputs/unlearning \
-  --method counterfactual_rebind
+```text
+outputs/
+  cifar10/
+    splits/
+    finetune/
+    unlearning/
+    comparison/
+  cifar100/
+    splits/
+    finetune/
+    unlearning/
+    comparison/
 ```
 
-### 4) Attack and compare utility vs forgetting
-```bash
-python scripts/evaluate_attacks.py \
-  --data-dir data \
-  --split-path outputs/splits/cifar10_split.json \
-  --base-checkpoint outputs/finetune/checkpoints/base_init.pt \
-  --candidate finetuned=outputs/finetune/checkpoints/finetuned_best.pt \
-  --candidate retain_only=outputs/unlearning/checkpoints/unlearn_retain_only.pt \
-  --candidate ga_kl=outputs/unlearning/checkpoints/unlearn_ga_kl.pt \
-  --candidate counterfactual_rebind=outputs/unlearning/checkpoints/unlearn_counterfactual_rebind.pt
-```
+On Sharanga, `env_activation.sh` supplies `UNML_DATA` and `UNML_OUTPUTS`.
+The same command then reads data and writes all heavy artifacts under scratch.
+
+CLI arguments remain available as temporary overrides, but normal experiments
+should be defined in `config/parameters.yaml`.
 
 ## Implemented attacks
 - `Confidence MIA`: membership inference using true-label confidence.
@@ -122,6 +92,8 @@ Forgetting quality combines:
 ## Notes
 - Backbone: `openai/clip-vit-base-patch32` (frozen).
 - Trainable params: low-rank adapters on image/text embeddings + optional logit scale.
+- Split files record the dataset and class vocabulary used by downstream stages.
+- Split/checkpoint dataset mismatches are rejected before an experiment runs.
 - This makes training lightweight and unlearning iterations fast.
 
 # Novel Directions To Explore (this is needs research)

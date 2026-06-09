@@ -16,7 +16,14 @@ os.environ.setdefault("USE_TF", "0")
 os.environ.setdefault("USE_FLAX", "0")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-from unml.config import load_runtime_config, resolve_str_list, resolve_value
+from unml.config import (
+    load_runtime_config,
+    resolve_data_dir,
+    resolve_dataset_and_split_path,
+    resolve_stage_output_dir,
+    resolve_str_list,
+    resolve_value,
+)
 
 UNLEARNING_METHODS = ("retain_only", "ga_kl", "counterfactual_rebind", "entropy_rebind")
 
@@ -29,6 +36,7 @@ def parse_args() -> argparse.Namespace:
         "--config", type=str, default=str(REPO_ROOT / "config" / "parameters.yaml")
     )
     parser.add_argument("--data-dir", type=str, default=None)
+    parser.add_argument("--dataset", type=str, default=None)
     parser.add_argument("--split-path", type=str, default=None)
     parser.add_argument("--finetuned-checkpoint", type=str, default=None)
     parser.add_argument("--output-dir", type=str, default=None)
@@ -65,6 +73,9 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     runtime_cfg = load_runtime_config(args.config)
+    dataset_name, split_path = resolve_dataset_and_split_path(
+        args.dataset, args.split_path, runtime_cfg
+    )
 
     from unml.unlearn import UnlearnConfig, run_unlearning
 
@@ -72,36 +83,29 @@ def main() -> None:
         None, runtime_cfg, ("unlearning", "methods"), ("counterfactual_rebind",)
     )
     default_method = methods[0] if methods else "counterfactual_rebind"
-    training_output_dir = resolve_value(
-        None, runtime_cfg, ("training", "output_dir"), "outputs/finetune"
+    training_output_dir = resolve_stage_output_dir(
+        None, runtime_cfg, dataset_name, "training"
     )
     finetuned_checkpoint = resolve_value(
         args.finetuned_checkpoint,
         runtime_cfg,
         ("unlearning", "finetuned_checkpoint"),
-        str(Path(training_output_dir) / "checkpoints" / "finetuned_best.pt"),
+        str(training_output_dir / "checkpoints" / "finetuned_best.pt"),
     )
 
     cfg = UnlearnConfig(
-        data_dir=resolve_value(
-            args.data_dir, runtime_cfg, ("data", "data_dir"), "data"
-        ),
-        split_path=resolve_value(
-            args.split_path,
-            runtime_cfg,
-            ("data", "split_path"),
-            "outputs/splits/cifar10_split.json",
-        ),
+        data_dir=str(resolve_data_dir(args.data_dir, runtime_cfg)),
+        split_path=split_path,
         finetuned_checkpoint=finetuned_checkpoint,
-        output_dir=resolve_value(
-            args.output_dir,
-            runtime_cfg,
-            ("unlearning", "output_dir"),
-            "outputs/unlearning",
+        output_dir=str(
+            resolve_stage_output_dir(
+                args.output_dir, runtime_cfg, dataset_name, "unlearning"
+            )
         ),
         method=resolve_value(
             args.method, runtime_cfg, ("unlearning", "method"), default_method
         ),
+        dataset_name=dataset_name,
         model_name=resolve_value(
             args.model_name,
             runtime_cfg,

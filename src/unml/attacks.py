@@ -12,7 +12,12 @@ from sklearn.metrics import roc_auc_score
 from torch.utils.data import DataLoader
 from transformers import CLIPImageProcessor, CLIPTokenizer
 
-from .data import CIFAR10_CLASSES, build_loaders, build_text_inputs
+from .data import (
+    build_loaders,
+    build_text_inputs,
+    load_split_metadata,
+    validate_checkpoint_dataset,
+)
 from .evaluate import collect_true_class_confidences, evaluate_classification
 from .model import load_checkpoint
 from helpers.tracker import update_unlearn_with_attacks
@@ -23,6 +28,7 @@ from .utils import get_device
 class AttackConfig:
     data_dir: str
     split_path: str
+    dataset_name: str
     model_name: str
     base_checkpoint: str
     candidate_checkpoints: Sequence[str]
@@ -155,9 +161,12 @@ def run_attack_comparison(cfg: AttackConfig) -> Dict[str, str]:
 
     image_processor = CLIPImageProcessor.from_pretrained(cfg.model_name)
     tokenizer = CLIPTokenizer.from_pretrained(cfg.model_name)
+    _, dataset_spec, class_names = load_split_metadata(
+        cfg.split_path, cfg.dataset_name
+    )
     class_text_inputs = build_text_inputs(
         tokenizer,
-        class_names=CIFAR10_CLASSES,
+        class_names=class_names,
         template=cfg.prompt_template,
     )
     class_text_inputs = {k: v.to(device) for k, v in class_text_inputs.items()}
@@ -168,14 +177,17 @@ def run_attack_comparison(cfg: AttackConfig) -> Dict[str, str]:
         image_processor=image_processor,
         batch_size=cfg.batch_size,
         num_workers=cfg.num_workers,
+        dataset_name=dataset_spec.name,
     )
 
-    base_model, _ = load_checkpoint(cfg.base_checkpoint, map_location=device)
+    base_model, base_meta = load_checkpoint(cfg.base_checkpoint, map_location=device)
+    validate_checkpoint_dataset(base_meta, dataset_spec.name, cfg.base_checkpoint)
     base_model = base_model.to(device).eval()
 
     records: List[Dict[str, float | str]] = []
     for name, ckpt_path in zip(cfg.candidate_names, cfg.candidate_checkpoints):
         model, meta = load_checkpoint(ckpt_path, map_location=device)
+        validate_checkpoint_dataset(meta, dataset_spec.name, ckpt_path)
         model = model.to(device).eval()
 
         metrics = _evaluate_model(

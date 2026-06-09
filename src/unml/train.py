@@ -12,7 +12,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
 from transformers import CLIPImageProcessor, CLIPTokenizer
 
-from .data import CIFAR10_CLASSES, build_loaders, build_text_inputs
+from .data import build_loaders, build_text_inputs, load_split_metadata
 from .evaluate import evaluate_classification
 from .model import ModelConfig, LightweightVLM, save_checkpoint
 from helpers.tracker import log_finetune_epoch, log_finetune_summary
@@ -24,6 +24,7 @@ class FineTuneConfig:
     data_dir: str
     split_path: str
     output_dir: str
+    dataset_name: str = "cifar10"
     model_name: str = "openai/clip-vit-base-patch32"
     prompt_template: str = "a photo of a {}"
     adapter_rank: int = 8
@@ -65,9 +66,12 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
 
     image_processor = CLIPImageProcessor.from_pretrained(cfg.model_name)
     tokenizer = CLIPTokenizer.from_pretrained(cfg.model_name)
+    _, dataset_spec, class_names = load_split_metadata(
+        cfg.split_path, cfg.dataset_name
+    )
     class_text_inputs = build_text_inputs(
         tokenizer,
-        class_names=CIFAR10_CLASSES,
+        class_names=class_names,
         template=cfg.prompt_template,
     )
     loaders = build_loaders(
@@ -76,6 +80,7 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
         image_processor=image_processor,
         batch_size=cfg.batch_size,
         num_workers=cfg.num_workers,
+        dataset_name=dataset_spec.name,
     )
 
     model_cfg = ModelConfig(
@@ -93,7 +98,12 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
     save_checkpoint(
         str(ckpt_dir / "base_init.pt"),
         model,
-        extra={"stage": "base_init", "note": "randomly initialized adapters"},
+        extra={
+            "stage": "base_init",
+            "note": "randomly initialized adapters",
+            "dataset": dataset_spec.name,
+            "class_names": class_names,
+        },
     )
 
     optimizer = AdamW(model.trainable_parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
@@ -154,7 +164,13 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
             save_checkpoint(
                 str(best_path),
                 model,
-                extra={"stage": "finetuned", "epoch": epoch + 1, "metrics": eval_metrics},
+                extra={
+                    "stage": "finetuned",
+                    "epoch": epoch + 1,
+                    "dataset": dataset_spec.name,
+                    "class_names": class_names,
+                    "metrics": eval_metrics,
+                },
             )
 
         if cfg.max_train_steps > 0 and global_step >= cfg.max_train_steps:
@@ -167,7 +183,8 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
             "best_retain_val_acc": best_metric,
             "final_metrics": best_model_metrics,
             "global_steps": global_step,
-            "class_names": CIFAR10_CLASSES,
+            "dataset": dataset_spec.name,
+            "class_names": class_names,
         },
         metrics_path,
     )

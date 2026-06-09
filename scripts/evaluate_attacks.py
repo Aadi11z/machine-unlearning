@@ -16,7 +16,14 @@ os.environ.setdefault("USE_TF", "0")
 os.environ.setdefault("USE_FLAX", "0")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-from unml.config import load_runtime_config, resolve_str_list, resolve_value
+from unml.config import (
+    load_runtime_config,
+    resolve_data_dir,
+    resolve_dataset_and_split_path,
+    resolve_stage_output_dir,
+    resolve_str_list,
+    resolve_value,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -27,6 +34,7 @@ def parse_args() -> argparse.Namespace:
         "--config", type=str, default=str(REPO_ROOT / "config" / "parameters.yaml")
     )
     parser.add_argument("--data-dir", type=str, default=None)
+    parser.add_argument("--dataset", type=str, default=None)
     parser.add_argument("--split-path", type=str, default=None)
     parser.add_argument("--model-name", type=str, default=None)
     parser.add_argument("--base-checkpoint", type=str, default=None)
@@ -50,6 +58,9 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     runtime_cfg = load_runtime_config(args.config)
+    dataset_name, split_path = resolve_dataset_and_split_path(
+        args.dataset, args.split_path, runtime_cfg
+    )
 
     from unml.attacks import AttackConfig, run_attack_comparison
 
@@ -63,15 +74,11 @@ def main() -> None:
             names.append(name)
             checkpoints.append(path)
     else:
-        training_output_dir = Path(
-            resolve_value(
-                None, runtime_cfg, ("training", "output_dir"), "outputs/finetune"
-            )
+        training_output_dir = resolve_stage_output_dir(
+            None, runtime_cfg, dataset_name, "training"
         )
-        unlearning_output_dir = Path(
-            resolve_value(
-                None, runtime_cfg, ("unlearning", "output_dir"), "outputs/unlearning"
-            )
+        unlearning_output_dir = resolve_stage_output_dir(
+            None, runtime_cfg, dataset_name, "unlearning"
         )
         methods = resolve_str_list(
             None,
@@ -93,15 +100,9 @@ def main() -> None:
         raise ValueError("No candidates provided or derived for attack evaluation")
 
     cfg = AttackConfig(
-        data_dir=resolve_value(
-            args.data_dir, runtime_cfg, ("data", "data_dir"), "data"
-        ),
-        split_path=resolve_value(
-            args.split_path,
-            runtime_cfg,
-            ("data", "split_path"),
-            "outputs/splits/cifar10_split.json",
-        ),
+        data_dir=str(resolve_data_dir(args.data_dir, runtime_cfg)),
+        split_path=split_path,
+        dataset_name=dataset_name,
         model_name=resolve_value(
             args.model_name,
             runtime_cfg,
@@ -114,11 +115,8 @@ def main() -> None:
             ("attack", "base_checkpoint"),
             str(
                 Path(
-                    resolve_value(
-                        None,
-                        runtime_cfg,
-                        ("training", "output_dir"),
-                        "outputs/finetune",
+                    resolve_stage_output_dir(
+                        None, runtime_cfg, dataset_name, "training"
                     )
                 )
                 / "checkpoints"
@@ -127,8 +125,10 @@ def main() -> None:
         ),
         candidate_checkpoints=checkpoints,
         candidate_names=names,
-        output_dir=resolve_value(
-            args.output_dir, runtime_cfg, ("attack", "output_dir"), "outputs/comparison"
+        output_dir=str(
+            resolve_stage_output_dir(
+                args.output_dir, runtime_cfg, dataset_name, "attack"
+            )
         ),
         prompt_template=resolve_value(
             args.prompt_template,

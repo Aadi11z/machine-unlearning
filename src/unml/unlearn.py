@@ -13,7 +13,13 @@ from torch.optim import AdamW
 from tqdm import trange
 from transformers import CLIPImageProcessor, CLIPTokenizer
 
-from .data import CIFAR10_CLASSES, build_loaders, build_text_inputs, cycle_loader
+from .data import (
+    build_loaders,
+    build_text_inputs,
+    cycle_loader,
+    load_split_metadata,
+    validate_checkpoint_dataset,
+)
 from .evaluate import evaluate_classification
 from .model import load_checkpoint, save_checkpoint
 from helpers.tracker import log_unlearn_run
@@ -35,6 +41,7 @@ class UnlearnConfig:
     finetuned_checkpoint: str
     output_dir: str
     method: str
+    dataset_name: str = "cifar10"
     model_name: str = "openai/clip-vit-base-patch32"
     prompt_template: str = "a photo of a {}"
     batch_size: int = 128
@@ -104,9 +111,12 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
 
     image_processor = CLIPImageProcessor.from_pretrained(cfg.model_name)
     tokenizer = CLIPTokenizer.from_pretrained(cfg.model_name)
+    _, dataset_spec, class_names = load_split_metadata(
+        cfg.split_path, cfg.dataset_name
+    )
     class_text_inputs = build_text_inputs(
         tokenizer,
-        class_names=CIFAR10_CLASSES,
+        class_names=class_names,
         template=cfg.prompt_template,
     )
     class_text_inputs = {k: v.to(device) for k, v in class_text_inputs.items()}
@@ -117,9 +127,13 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
         image_processor=image_processor,
         batch_size=cfg.batch_size,
         num_workers=cfg.num_workers,
+        dataset_name=dataset_spec.name,
     )
 
     model, finetune_meta = load_checkpoint(cfg.finetuned_checkpoint, map_location=device)
+    validate_checkpoint_dataset(
+        finetune_meta, dataset_spec.name, cfg.finetuned_checkpoint
+    )
     model = model.to(device)
     model.clip.eval()
 
@@ -182,7 +196,7 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
                 # once the model confidently predicts y_cf, gradients from these terms
                 # shrink to ~0 and only retain_kl remains, making it behave like ga_kl.
                 y_true = batch_f["labels"]
-                y_cf = _sample_counterfactual(y_true, len(CIFAR10_CLASSES), rng).to(device)
+                y_cf = _sample_counterfactual(y_true, len(class_names), rng).to(device)
                 rebind_loss = F.cross_entropy(logits_f, y_cf) # Redirect to counterfactual
                 true_logits = logits_f.gather(1, y_true.unsqueeze(1)).squeeze(1) # score of the true class
                 cf_logits = logits_f.gather(1, y_cf.unsqueeze(1)).squeeze(1) # score of the counterfactual class
@@ -234,6 +248,8 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
         extra={
             "stage": "unlearned",
             "method": cfg.method,
+            "dataset": dataset_spec.name,
+            "class_names": class_names,
             "finetuned_checkpoint": cfg.finetuned_checkpoint,
             "finetune_meta": finetune_meta,
             "metrics": summary_metrics,

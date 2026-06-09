@@ -11,7 +11,16 @@ for path in (REPO_ROOT, REPO_ROOT / "src"):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from unml.config import load_runtime_config, resolve_str_list, resolve_value
+from unml.config import (
+    load_runtime_config,
+    resolve_data_dir,
+    resolve_dataset_and_split_path,
+    resolve_dataset_value,
+    resolve_forget_classes,
+    resolve_output_root,
+    resolve_str_list,
+    resolve_value,
+)
 
 
 def run_cmd(cmd: list[str], env: dict[str, str]) -> None:
@@ -28,6 +37,7 @@ def parse_args() -> argparse.Namespace:
         "--config", type=str, default=str(REPO_ROOT / "config" / "parameters.yaml")
     )
     parser.add_argument("--data-dir", type=str, default=None)
+    parser.add_argument("--dataset", type=str, default=None)
     parser.add_argument("--split-path", type=str, default=None)
     parser.add_argument("--model-name", type=str, default=None)
     parser.add_argument("--output-root", type=str, default=None)
@@ -43,12 +53,20 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--device", type=str, default=None)
+    parser.add_argument(
+        "--show-config",
+        action="store_true",
+        help="Print resolved dataset and artifact paths without running stages",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     runtime_cfg = load_runtime_config(args.config)
+    dataset_name, split_path = resolve_dataset_and_split_path(
+        args.dataset, args.split_path, runtime_cfg
+    )
 
     repo_root = REPO_ROOT
     env = os.environ.copy()
@@ -63,24 +81,22 @@ def main() -> None:
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
     )
 
-    data_dir = resolve_value(args.data_dir, runtime_cfg, ("data", "data_dir"), "data")
-    split_path = resolve_value(
-        args.split_path,
-        runtime_cfg,
-        ("data", "split_path"),
-        "outputs/splits/cifar10_split.json",
-    )
+    data_dir = str(resolve_data_dir(args.data_dir, runtime_cfg))
     model_name = resolve_value(
         args.model_name,
         runtime_cfg,
         ("model", "model_name"),
         "openai/clip-vit-base-patch32",
     )
-    forget_classes = resolve_value(
-        args.forget_classes, runtime_cfg, ("data", "forget_classes"), "3,5"
+    forget_classes = resolve_forget_classes(
+        args.forget_classes, runtime_cfg, dataset_name
     )
-    forget_fraction = resolve_value(
-        args.forget_fraction, runtime_cfg, ("data", "forget_fraction"), 1.0
+    forget_fraction = resolve_dataset_value(
+        args.forget_fraction,
+        runtime_cfg,
+        dataset_name,
+        "forget_fraction",
+        1.0,
     )
     ft_batch_size = resolve_value(
         args.batch_size, runtime_cfg, ("training", "batch_size"), 128
@@ -114,27 +130,27 @@ def main() -> None:
     seed = resolve_value(args.seed, runtime_cfg, ("experiment", "seed"), 42)
     device = resolve_value(args.device, runtime_cfg, ("experiment", "device"), "auto")
 
-    if args.output_root is not None:
-        output_root = Path(args.output_root)
-        finetune_dir = output_root / "finetune"
-        unlearn_dir = output_root / "unlearning"
-        compare_dir = output_root / "comparison"
-    else:
-        finetune_dir = Path(
-            resolve_value(
-                None, runtime_cfg, ("training", "output_dir"), "outputs/finetune"
-            )
-        )
-        unlearn_dir = Path(
-            resolve_value(
-                None, runtime_cfg, ("unlearning", "output_dir"), "outputs/unlearning"
-            )
-        )
-        compare_dir = Path(
-            resolve_value(
-                None, runtime_cfg, ("attack", "output_dir"), "outputs/comparison"
-            )
-        )
+    output_root = resolve_output_root(
+        args.output_root, runtime_cfg, dataset_name
+    )
+    finetune_dir = output_root / "finetune"
+    unlearn_dir = output_root / "unlearning"
+    compare_dir = output_root / "comparison"
+
+    if args.show_config:
+        print(f"dataset={dataset_name}")
+        print(f"data_dir={data_dir}")
+        print(f"split_path={split_path}")
+        print(f"forget_classes={forget_classes}")
+        print(f"forget_fraction={forget_fraction}")
+        print(f"output_root={output_root}")
+        print(f"finetune_dir={finetune_dir}")
+        print(f"unlearning_dir={unlearn_dir}")
+        print(f"comparison_dir={compare_dir}")
+        print(f"methods={','.join(methods)}")
+        print(f"seed={seed}")
+        print(f"device={device}")
+        return
 
     # Data Preparation command
     run_cmd(
@@ -145,6 +161,8 @@ def main() -> None:
             args.config,
             "--data-dir",
             data_dir,
+            "--dataset",
+            dataset_name,
             "--split-path",
             split_path,
             "--forget-classes",
@@ -166,6 +184,8 @@ def main() -> None:
             args.config,
             "--data-dir",
             data_dir,
+            "--dataset",
+            dataset_name,
             "--split-path",
             split_path,
             "--output-dir",
@@ -200,6 +220,8 @@ def main() -> None:
                 args.config,
                 "--data-dir",
                 data_dir,
+                "--dataset",
+                dataset_name,
                 "--split-path",
                 split_path,
                 "--finetuned-checkpoint",
@@ -244,6 +266,8 @@ def main() -> None:
             args.config,
             "--data-dir",
             data_dir,
+            "--dataset",
+            dataset_name,
             "--split-path",
             split_path,
             "--model-name",

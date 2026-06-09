@@ -1,14 +1,25 @@
 experiment:
-  name: cifar10_vlm_unlearning
+  name: vlm_unlearning
   seed: 42
   device: auto
 
 data:
+  # Change only this value to switch the complete pipeline.
+  dataset: cifar10
   data_dir: data
-  split_path: outputs/splits/cifar10_split.json
-  forget_classes: "3,5"
-  forget_fraction: 1.0
   retain_val_fraction: 0.1
+  profiles:
+    cifar10:
+      forget_classes: "3,5"
+      # 1.0 forgets every sample in these classes; lower values select a
+      # deterministic subset of samples from the selected classes.
+      forget_fraction: 1.0
+    cifar100:
+      forget_classes: "54,62,70,82,92"
+      forget_fraction: 1.0
+
+outputs:
+  root: outputs/{dataset}
 
 model:
   model_name: openai/clip-vit-base-patch32
@@ -18,7 +29,6 @@ model:
   train_logit_scale: true
 
 training:
-  output_dir: outputs/finetune
   batch_size: 128
   num_workers: 4
   lr: 0.003
@@ -27,7 +37,6 @@ training:
   max_train_steps: -1
 
 unlearning:
-  output_dir: outputs/unlearning
   batch_size: 128
   num_workers: 4
   methods:
@@ -46,7 +55,6 @@ unlearning:
   entropy_weight: 1.0
 
 attack:
-  output_dir: outputs/comparison
   batch_size: 128
   num_workers: 4
   max_attack_samples: 4000
