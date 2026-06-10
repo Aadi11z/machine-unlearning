@@ -8,9 +8,11 @@ import pytest
 from unml.attacks import (
     _aligned_score_pairs,
     _group_classes,
+    _oracle_relative_distances,
     _safe_artifact_name,
     _validate_candidates,
     _write_hierarchy_artifacts,
+    _write_oracle_artifacts,
 )
 from unml.evaluate import summarize_classification_group
 
@@ -164,3 +166,103 @@ def test_hierarchy_artifacts_are_machine_readable(tmp_path) -> None:
     )
     assert payload["groups"]["target"]["accuracy"] == 1.0
     assert payload["groups"]["sibling"]["accuracy"] == 0.0
+
+
+def _rich_outputs(
+    indices: list[int],
+    labels: list[int],
+    probabilities: list[list[float]],
+    embeddings: list[list[float]],
+) -> dict:
+    outputs = _outputs(labels, labels, indices=indices)
+    outputs["probabilities"] = np.asarray(probabilities, dtype=np.float32)
+    outputs["embeddings"] = np.asarray(embeddings, dtype=np.float32)
+    return outputs
+
+
+def test_oracle_distances_align_by_index_and_preserve_empty_groups() -> None:
+    oracle = _rich_outputs(
+        indices=[10, 20],
+        labels=[0, 2],
+        probabilities=[[0.8, 0.1, 0.1], [0.1, 0.1, 0.8]],
+        embeddings=[[1.0, 0.0], [0.0, 1.0]],
+    )
+    candidate = _rich_outputs(
+        indices=[20, 10],
+        labels=[2, 0],
+        probabilities=[[0.2, 0.1, 0.7], [0.7, 0.2, 0.1]],
+        embeddings=[[0.0, 1.0], [1.0, 0.0]],
+    )
+    groups = {
+        "target": [0],
+        "sibling": [],
+        "unrelated": [1, 2],
+        "retain": [1, 2],
+        "all": [0, 1, 2],
+    }
+
+    metrics, per_sample = _oracle_relative_distances(
+        candidate, oracle, groups
+    )
+
+    assert metrics["oracle_prediction_kl_target"] > 0
+    assert metrics["oracle_embedding_cosine_target"] == pytest.approx(0.0)
+    assert metrics["oracle_prediction_kl_sibling"] is None
+    assert metrics["oracle_distance_sibling_n"] == 0
+    assert per_sample["index"].tolist() == [10, 20]
+
+
+def test_oracle_self_distance_is_zero_and_artifacts_are_written(
+    tmp_path,
+) -> None:
+    outputs = _rich_outputs(
+        indices=[1, 2, 3],
+        labels=[0, 1, 2],
+        probabilities=[
+            [0.8, 0.1, 0.1],
+            [0.1, 0.8, 0.1],
+            [0.1, 0.1, 0.8],
+        ],
+        embeddings=[[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]],
+    )
+    groups = {
+        "target": [0],
+        "sibling": [1],
+        "unrelated": [2],
+        "retain": [1, 2],
+        "all": [0, 1, 2],
+    }
+
+    metrics, per_sample = _oracle_relative_distances(
+        outputs, outputs, groups
+    )
+    paths = _write_oracle_artifacts(
+        tmp_path, "retrain/oracle", metrics, per_sample
+    )
+
+    assert metrics["oracle_prediction_kl_all"] == pytest.approx(0.0)
+    assert metrics["oracle_embedding_cosine_all"] == pytest.approx(0.0)
+    assert (
+        tmp_path / "oracle_reference/retrain_oracle_summary.json"
+    ).exists()
+    payload = json.loads(open(paths["summary_path"]).read())
+    assert payload["prediction_distance"] == "KL(oracle || candidate)"
+
+
+def test_oracle_distances_reject_label_mismatch_after_alignment() -> None:
+    oracle = _rich_outputs(
+        [1], [0], [[0.9, 0.1]], [[1.0, 0.0]]
+    )
+    candidate = _rich_outputs(
+        [1], [1], [[0.1, 0.9]], [[0.0, 1.0]]
+    )
+    groups = {
+        "target": [0],
+        "sibling": [],
+        "unrelated": [1],
+        "retain": [1],
+        "all": [0, 1],
+    }
+
+    with pytest.raises(ValueError, match="labels disagree"):
+        _oracle_relative_distances(candidate, oracle, groups)

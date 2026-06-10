@@ -222,6 +222,134 @@ def _aligned_score_pairs(
     )
 
 
+def _oracle_relative_distances(
+    candidate: Dict[str, np.ndarray | float],
+    oracle: Dict[str, np.ndarray | float],
+    class_groups: Dict[str, list[int]],
+) -> tuple[Dict[str, float | int | None], pd.DataFrame]:
+    required = ("indices", "labels", "probabilities", "embeddings")
+    for name, outputs in (("candidate", candidate), ("oracle", oracle)):
+        missing = [key for key in required if key not in outputs]
+        if missing:
+            raise ValueError(
+                f"{name} outputs missing oracle-comparison fields: {missing}"
+            )
+
+    oracle_indices = np.asarray(oracle["indices"], dtype=np.int64)
+    if np.unique(oracle_indices).size != oracle_indices.size:
+        raise ValueError("Oracle outputs contain duplicate dataset indices")
+    oracle_rows = {
+        int(index): row for row, index in enumerate(oracle_indices)
+    }
+
+    candidate_indices = np.asarray(candidate["indices"], dtype=np.int64)
+    if np.unique(candidate_indices).size != candidate_indices.size:
+        raise ValueError("Candidate outputs contain duplicate dataset indices")
+    if set(candidate_indices.tolist()) != set(oracle_indices.tolist()):
+        raise ValueError(
+            "Candidate and oracle outputs do not cover identical dataset indices"
+        )
+
+    candidate_labels = np.asarray(candidate["labels"], dtype=np.int64)
+    oracle_labels = np.asarray(oracle["labels"], dtype=np.int64)
+    candidate_probabilities = np.asarray(
+        candidate["probabilities"], dtype=np.float64
+    )
+    oracle_probabilities = np.asarray(
+        oracle["probabilities"], dtype=np.float64
+    )
+    candidate_embeddings = np.asarray(
+        candidate["embeddings"], dtype=np.float64
+    )
+    oracle_embeddings = np.asarray(oracle["embeddings"], dtype=np.float64)
+
+    aligned_oracle_rows = np.asarray(
+        [oracle_rows[int(index)] for index in candidate_indices],
+        dtype=np.int64,
+    )
+    aligned_oracle_labels = oracle_labels[aligned_oracle_rows]
+    if not np.array_equal(candidate_labels, aligned_oracle_labels):
+        raise ValueError(
+            "Candidate and oracle labels disagree after dataset-index alignment"
+        )
+    aligned_oracle_probabilities = oracle_probabilities[aligned_oracle_rows]
+    aligned_oracle_embeddings = oracle_embeddings[aligned_oracle_rows]
+    if candidate_probabilities.shape != aligned_oracle_probabilities.shape:
+        raise ValueError("Candidate and oracle probability shapes differ")
+    if candidate_embeddings.shape != aligned_oracle_embeddings.shape:
+        raise ValueError("Candidate and oracle embedding shapes differ")
+
+    epsilon = np.finfo(np.float64).eps
+    candidate_probabilities = np.clip(
+        candidate_probabilities, epsilon, None
+    )
+    aligned_oracle_probabilities = np.clip(
+        aligned_oracle_probabilities, epsilon, None
+    )
+    candidate_probabilities /= candidate_probabilities.sum(
+        axis=1, keepdims=True
+    )
+    aligned_oracle_probabilities /= aligned_oracle_probabilities.sum(
+        axis=1, keepdims=True
+    )
+    prediction_kl = np.sum(
+        aligned_oracle_probabilities
+        * (
+            np.log(aligned_oracle_probabilities)
+            - np.log(candidate_probabilities)
+        ),
+        axis=1,
+    )
+
+    candidate_norms = np.linalg.norm(
+        candidate_embeddings, axis=1, keepdims=True
+    )
+    oracle_norms = np.linalg.norm(
+        aligned_oracle_embeddings, axis=1, keepdims=True
+    )
+    if np.any(candidate_norms == 0) or np.any(oracle_norms == 0):
+        raise ValueError("Oracle comparison received a zero-norm embedding")
+    embedding_cosine = 1.0 - np.sum(
+        (candidate_embeddings / candidate_norms)
+        * (aligned_oracle_embeddings / oracle_norms),
+        axis=1,
+    )
+    embedding_cosine = np.maximum(embedding_cosine, 0.0)
+
+    hierarchy_group = np.full(candidate_labels.shape, "unassigned", dtype=object)
+    for group_name in ("target", "sibling", "unrelated"):
+        hierarchy_group[
+            np.isin(candidate_labels, class_groups[group_name])
+        ] = group_name
+    if np.any(hierarchy_group == "unassigned"):
+        raise ValueError("Some labels are not assigned to a hierarchy group")
+
+    per_sample = pd.DataFrame(
+        {
+            "index": candidate_indices,
+            "label": candidate_labels,
+            "hierarchy_group": hierarchy_group,
+            "is_retain": np.isin(
+                candidate_labels, class_groups["retain"]
+            ),
+            "prediction_kl_oracle_to_candidate": prediction_kl,
+            "embedding_cosine_distance_from_oracle": embedding_cosine,
+        }
+    ).sort_values("index")
+
+    metrics: Dict[str, float | int | None] = {}
+    for group_name in ("target", "sibling", "unrelated", "retain", "all"):
+        mask = np.isin(candidate_labels, class_groups[group_name])
+        metrics[f"oracle_distance_{group_name}_n"] = int(mask.sum())
+        metrics[f"oracle_prediction_kl_{group_name}"] = (
+            float(prediction_kl[mask].mean()) if mask.any() else None
+        )
+        metrics[f"oracle_embedding_cosine_{group_name}"] = (
+            float(embedding_cosine[mask].mean()) if mask.any() else None
+        )
+    return metrics, per_sample
+
+
 def _evaluate_model(
     model,
     loaders: Dict[str, DataLoader],
@@ -243,7 +371,11 @@ def _evaluate_model(
         "non_blocking": non_blocking,
     }
     test_outputs = collect_classification_outputs(
-        model, loaders["test_all"], **common
+        model,
+        loaders["test_all"],
+        include_probabilities=True,
+        include_embeddings=True,
+        **common,
     )
     forget_outputs = collect_classification_outputs(
         model,
@@ -308,6 +440,7 @@ def _evaluate_model(
         "groups": groups,
         "forget_train": forget_train,
         "mia_sample_count": attack_count,
+        "test_outputs": test_outputs,
     }
     return scalar_metrics, details
 
@@ -403,6 +536,36 @@ def _write_hierarchy_artifacts(
     }
 
 
+def _write_oracle_artifacts(
+    output_dir: Path,
+    model_name: str,
+    metrics: Dict[str, float | int | None],
+    per_sample: pd.DataFrame,
+) -> Dict[str, str]:
+    artifact_name = _safe_artifact_name(model_name)
+    oracle_dir = output_dir / "oracle_reference"
+    oracle_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = oracle_dir / f"{artifact_name}_summary.json"
+    per_sample_path = oracle_dir / f"{artifact_name}_per_sample.csv"
+    per_sample.to_csv(per_sample_path, index=False)
+    with summary_path.open("w", encoding="utf-8") as handle:
+        json.dump(
+            {
+                "model": model_name,
+                "reference": "retrain_oracle",
+                "prediction_distance": "KL(oracle || candidate)",
+                "embedding_distance": "1 - cosine(candidate, oracle)",
+                "metrics": metrics,
+            },
+            handle,
+            indent=2,
+        )
+    return {
+        "summary_path": str(summary_path),
+        "per_sample_path": str(per_sample_path),
+    }
+
+
 def _plot_tradeoff(df: pd.DataFrame, out_path: str) -> None:
     fig, ax = plt.subplots(figsize=(7, 5))
     ax.scatter(df["utility_test_retain"], df["forget_quality"], s=80)
@@ -464,13 +627,25 @@ def run_attack_comparison(cfg: AttackConfig) -> Dict[str, Any]:
 
     records: List[Dict[str, float | int | str | None]] = []
     hierarchy_artifacts = {}
-    for name, ckpt_path in zip(cfg.candidate_names, cfg.candidate_checkpoints):
-        model, meta = load_checkpoint(ckpt_path, map_location=device)
-        validate_checkpoint_dataset(meta, dataset_spec.name, ckpt_path)
-        model = model.to(device).eval()
-
-        metrics, details = _evaluate_model(
-            model=model,
+    oracle_artifacts = {}
+    oracle_outputs = None
+    oracle_index = (
+        list(cfg.candidate_names).index("retrain_oracle")
+        if "retrain_oracle" in cfg.candidate_names
+        else None
+    )
+    cached_oracle_evaluation = None
+    if oracle_index is not None:
+        oracle_checkpoint = cfg.candidate_checkpoints[oracle_index]
+        oracle_model, oracle_meta = load_checkpoint(
+            oracle_checkpoint, map_location=device
+        )
+        validate_checkpoint_dataset(
+            oracle_meta, dataset_spec.name, oracle_checkpoint
+        )
+        oracle_model = oracle_model.to(device).eval()
+        cached_oracle_evaluation = _evaluate_model(
+            model=oracle_model,
             loaders=loaders,
             class_text_inputs=class_text_inputs,
             device=device,
@@ -480,6 +655,38 @@ def run_attack_comparison(cfg: AttackConfig) -> Dict[str, Any]:
             base_outputs=base_outputs,
             non_blocking=cfg.non_blocking,
         )
+        oracle_outputs = cached_oracle_evaluation[1]["test_outputs"]
+        del oracle_model
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+
+    for name, ckpt_path in zip(cfg.candidate_names, cfg.candidate_checkpoints):
+        if name == "retrain_oracle" and cached_oracle_evaluation is not None:
+            metrics, details = cached_oracle_evaluation
+            meta = oracle_meta
+        else:
+            model, meta = load_checkpoint(ckpt_path, map_location=device)
+            validate_checkpoint_dataset(meta, dataset_spec.name, ckpt_path)
+            model = model.to(device).eval()
+            metrics, details = _evaluate_model(
+                model=model,
+                loaders=loaders,
+                class_text_inputs=class_text_inputs,
+                device=device,
+                max_attack_samples=cfg.max_attack_samples,
+                class_groups=class_groups,
+                class_names=class_names,
+                base_outputs=base_outputs,
+                non_blocking=cfg.non_blocking,
+            )
+        if oracle_outputs is not None:
+            oracle_metrics, per_sample = _oracle_relative_distances(
+                details["test_outputs"], oracle_outputs, class_groups
+            )
+            metrics.update(oracle_metrics)
+            oracle_artifacts[name] = _write_oracle_artifacts(
+                output_dir, name, oracle_metrics, per_sample
+            )
         hierarchy_artifacts[name] = _write_hierarchy_artifacts(
             output_dir, name, details
         )
@@ -496,7 +703,7 @@ def run_attack_comparison(cfg: AttackConfig) -> Dict[str, Any]:
 
     with open(md_path, "w", encoding="utf-8") as handle:
         handle.write("# Utility vs Forget Quality\n\n")
-        handle.write(df[[
+        markdown_columns = [
             "model",
             "utility_test_retain",
             "utility_test_all",
@@ -510,7 +717,21 @@ def run_attack_comparison(cfg: AttackConfig) -> Dict[str, Any]:
             "forget_quality",
             "mia_auc_confidence",
             "mia_auc_delta",
-        ]].to_markdown(index=False))
+        ]
+        if oracle_outputs is not None:
+            markdown_columns.extend(
+                [
+                    "oracle_prediction_kl_target",
+                    "oracle_prediction_kl_sibling",
+                    "oracle_prediction_kl_unrelated",
+                    "oracle_prediction_kl_all",
+                    "oracle_embedding_cosine_target",
+                    "oracle_embedding_cosine_sibling",
+                    "oracle_embedding_cosine_unrelated",
+                    "oracle_embedding_cosine_all",
+                ]
+            )
+        handle.write(df[markdown_columns].to_markdown(index=False))
         handle.write("\n")
 
     _plot_tradeoff(df, str(plot_path))
@@ -521,5 +742,6 @@ def run_attack_comparison(cfg: AttackConfig) -> Dict[str, Any]:
         "markdown_path": str(md_path),
         "plot_path": str(plot_path),
         "hierarchy_artifacts": hierarchy_artifacts,
+        "oracle_artifacts": oracle_artifacts,
         "best_model": str(best_row.get("model", "")),
     }

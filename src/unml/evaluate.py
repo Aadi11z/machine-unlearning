@@ -75,6 +75,8 @@ def collect_classification_outputs(
     max_samples: int | None = None,
     class_text_features: torch.Tensor | None = None,
     non_blocking: bool = False,
+    include_probabilities: bool = False,
+    include_embeddings: bool = False,
 ) -> Dict[str, np.ndarray | float]:
     model.eval()
     if class_text_features is None:
@@ -85,14 +87,23 @@ def collect_classification_outputs(
     predictions_all = []
     indices_all = []
     true_scores_all = []
+    probabilities_all = []
+    embeddings_all = []
     losses = []
     collected = 0
     for batch in loader:
         batch = move_to_device(batch, device, non_blocking=non_blocking)
-        logits = model.class_logits_from_text_features(
-            pixel_values=batch["pixel_values"],
-            class_text_features=class_text_features,
-        )
+        if include_probabilities or include_embeddings:
+            image_features = model.encode_images(batch["pixel_values"])
+            logits = model.logits_from_embeddings(
+                image_features, class_text_features
+            )
+        else:
+            image_features = None
+            logits = model.class_logits_from_text_features(
+                pixel_values=batch["pixel_values"],
+                class_text_features=class_text_features,
+            )
         labels = batch["labels"]
         probabilities = logits.softmax(dim=-1)
         labels_all.append(labels.detach().cpu())
@@ -101,6 +112,10 @@ def collect_classification_outputs(
         true_scores_all.append(
             probabilities.gather(1, labels.unsqueeze(1)).squeeze(1).detach().cpu()
         )
+        if include_probabilities:
+            probabilities_all.append(probabilities.detach().cpu())
+        if include_embeddings:
+            embeddings_all.append(image_features.detach().cpu())
         losses.append(
             F.cross_entropy(logits, labels, reduction="none").detach().cpu()
         )
@@ -109,32 +124,60 @@ def collect_classification_outputs(
             break
 
     if not labels_all:
-        return {
+        empty: Dict[str, np.ndarray | float] = {
             "labels": np.empty(0, dtype=np.int64),
             "predictions": np.empty(0, dtype=np.int64),
             "indices": np.empty(0, dtype=np.int64),
             "true_scores": np.empty(0, dtype=np.float32),
             "loss": 0.0,
         }
+        if include_probabilities:
+            empty["probabilities"] = np.empty(
+                (0, int(class_text_features.shape[0])), dtype=np.float32
+            )
+        if include_embeddings:
+            empty["embeddings"] = np.empty(
+                (0, int(class_text_features.shape[1])), dtype=np.float32
+            )
+        return empty
 
     labels = torch.cat(labels_all)
     predictions = torch.cat(predictions_all)
     indices = torch.cat(indices_all)
     true_scores = torch.cat(true_scores_all)
     sample_losses = torch.cat(losses)
+    all_probabilities = (
+        torch.cat(probabilities_all) if include_probabilities else None
+    )
+    all_embeddings = (
+        torch.cat(embeddings_all) if include_embeddings else None
+    )
     if max_samples is not None:
         labels = labels[:max_samples]
         predictions = predictions[:max_samples]
         indices = indices[:max_samples]
         true_scores = true_scores[:max_samples]
         sample_losses = sample_losses[:max_samples]
-    return {
+        if all_probabilities is not None:
+            all_probabilities = all_probabilities[:max_samples]
+        if all_embeddings is not None:
+            all_embeddings = all_embeddings[:max_samples]
+    result: Dict[str, np.ndarray | float] = {
         "labels": labels.numpy().astype(np.int64, copy=False),
         "predictions": predictions.numpy().astype(np.int64, copy=False),
         "indices": indices.numpy().astype(np.int64, copy=False),
         "true_scores": true_scores.numpy().astype(np.float32, copy=False),
         "loss": float(sample_losses.mean().item()),
     }
+    if all_probabilities is not None:
+        result["probabilities"] = all_probabilities.numpy().astype(
+            np.float32, copy=False
+        )
+    if all_embeddings is not None:
+        result["embeddings"] = all_embeddings.numpy().astype(
+            np.float32, copy=False
+        )
+    return result
 
 
 def summarize_classification_group(

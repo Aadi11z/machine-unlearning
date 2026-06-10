@@ -12,6 +12,7 @@ from unml.evaluate import (
 class CountingModel:
     def __init__(self) -> None:
         self.text_encode_calls = 0
+        self.image_encode_calls = 0
 
     def eval(self):
         return self
@@ -28,6 +29,17 @@ class CountingModel:
         class_text_features: torch.Tensor,
     ) -> torch.Tensor:
         return pixel_values @ class_text_features.t()
+
+    def encode_images(self, pixel_values: torch.Tensor) -> torch.Tensor:
+        self.image_encode_calls += 1
+        return torch.nn.functional.normalize(pixel_values, dim=-1)
+
+    def logits_from_embeddings(
+        self,
+        image_features: torch.Tensor,
+        class_text_features: torch.Tensor,
+    ) -> torch.Tensor:
+        return image_features @ class_text_features.t()
 
 
 def test_evaluation_encodes_class_text_once_for_multiple_batches() -> None:
@@ -85,3 +97,33 @@ def test_collected_outputs_include_index_aligned_predictions_and_scores() -> Non
     assert outputs["labels"].tolist() == [0, 0]
     assert outputs["predictions"].tolist() == [0, 0]
     assert outputs["true_scores"].shape == (2,)
+
+
+def test_rich_outputs_reuse_one_image_encoding_per_batch() -> None:
+    model = CountingModel()
+    samples = [
+        {
+            "pixel_values": torch.tensor([1.0, float(index + 1)]),
+            "labels": torch.tensor(index % 2),
+            "indices": torch.tensor(index),
+        }
+        for index in range(3)
+    ]
+    loader = DataLoader(samples, batch_size=2)
+    class_text_inputs = {
+        "input_ids": torch.ones((2, 3), dtype=torch.long),
+        "attention_mask": torch.ones((2, 3), dtype=torch.long),
+    }
+
+    outputs = collect_classification_outputs(
+        model,
+        loader,
+        class_text_inputs,
+        torch.device("cpu"),
+        include_probabilities=True,
+        include_embeddings=True,
+    )
+
+    assert model.image_encode_calls == 2
+    assert outputs["probabilities"].shape == (3, 2)
+    assert outputs["embeddings"].shape == (3, 2)
