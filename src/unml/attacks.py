@@ -1307,7 +1307,11 @@ def run_attack_comparison(cfg: AttackConfig) -> Dict[str, Any]:
         markdown_columns = [
             column for column in markdown_columns if column in df.columns
         ]
-        handle.write(df[markdown_columns].to_markdown(index=False))
+        try:
+            markdown = df[markdown_columns].to_markdown(index=False)
+        except ImportError:
+            markdown = df[markdown_columns].to_string(index=False)
+        handle.write(markdown)
         handle.write("\n")
 
     _plot_tradeoff(df, str(plot_path))
