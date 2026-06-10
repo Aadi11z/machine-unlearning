@@ -2,7 +2,6 @@
 from __future__ import annotations
 import argparse
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -24,11 +23,7 @@ from unml.config import (
     resolve_section_value,
     resolve_value,
 )
-
-
-def run_cmd(cmd: list[str], env: dict[str, str]) -> None:
-    print("[cmd]", " ".join(cmd))
-    subprocess.run(cmd, check=True, env=env)
+from unml.pipeline import run_pipeline_stage
 
 
 def parse_args() -> argparse.Namespace:
@@ -61,6 +56,24 @@ def parse_args() -> argparse.Namespace:
         "--show-config",
         action="store_true",
         help="Print resolved dataset and artifact paths without running stages",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Skip stages only when their command, Git/config/input hashes, "
+            "and output hashes match a successful stage receipt"
+        ),
+    )
+    parser.add_argument(
+        "--force-stage",
+        action="append",
+        default=[],
+        help=(
+            "Rerun a stage even under --resume. Repeat as needed; valid names "
+            "include prepare, finetune, retrain_oracle, unlearn, "
+            "unlearn:<method>, and evaluate"
+        ),
     )
     return parser.parse_args()
 
@@ -194,6 +207,29 @@ def main() -> None:
     finetune_dir = output_root / "finetune"
     unlearn_dir = output_root / "unlearning"
     compare_dir = output_root / "comparison"
+    config_path = Path(args.config).resolve()
+
+    def run_stage(
+        stage: str,
+        command: list[str],
+        *,
+        inputs: list[str | Path],
+        outputs: list[str | Path],
+    ) -> None:
+        force = stage in args.force_stage or (
+            stage.startswith("unlearn:") and "unlearn" in args.force_stage
+        )
+        run_pipeline_stage(
+            stage=stage,
+            command=command,
+            env=env,
+            output_root=output_root,
+            input_paths=[config_path, *inputs],
+            output_paths=outputs,
+            resume=args.resume,
+            force=force,
+            repo_root=repo_root,
+        )
 
     if args.show_config:
         print(f"dataset={dataset_name}")
@@ -222,13 +258,14 @@ def main() -> None:
         print(f"training.non_blocking={ft_non_blocking}")
         print(f"seed={seed}")
         print(f"device={device}")
+        print(f"resume={args.resume}")
+        print(f"force_stages={','.join(args.force_stage)}")
         return
 
     request_args = ["--request", request_name] if request_name else []
 
     # Data Preparation command
-    run_cmd(
-        [
+    prepare_command = [
             sys.executable,
             str(repo_root / "scripts" / "prepare_data.py"),
             "--config",
@@ -246,13 +283,16 @@ def main() -> None:
             str(forget_fraction),
             "--seed",
             str(seed),
-        ],
-        env,
+    ]
+    run_stage(
+        "prepare",
+        prepare_command,
+        inputs=[],
+        outputs=[split_path],
     )
 
     # Training VLM command
-    run_cmd(
-        [
+    finetune_command = [
             sys.executable,
             str(repo_root / "scripts" / "train_vlm.py"),
             "--config",
@@ -282,18 +322,24 @@ def main() -> None:
             str(seed),
             "--device",
             device,
-        ],
-        env,
-    )
+    ]
 
     finetuned_ckpt = finetune_dir / "checkpoints" / "finetuned_best.pt"
     base_ckpt = finetune_dir / "checkpoints" / "base_init.pt"
+    finetune_metrics = finetune_dir / "metrics" / "finetune_metrics.json"
+    run_stage(
+        "finetune",
+        finetune_command,
+        inputs=[split_path],
+        outputs=[base_ckpt, finetuned_ckpt, finetune_metrics],
+    )
+
     oracle_dir = output_root / "retrain_oracle"
     oracle_ckpt = oracle_dir / "checkpoints" / "retrained_best.pt"
+    oracle_metrics = oracle_dir / "metrics" / "retrain_metrics.json"
 
     if retraining_enabled:
-        run_cmd(
-            [
+        oracle_command = [
                 sys.executable,
                 str(repo_root / "scripts" / "train_vlm.py"),
                 "--config",
@@ -311,7 +357,7 @@ def main() -> None:
                 "--initial-checkpoint",
                 str(base_ckpt),
                 "--source-metrics",
-                str(finetune_dir / "metrics" / "finetune_metrics.json"),
+                str(finetune_metrics),
                 "--model-name",
                 model_name,
                 "--batch-size",
@@ -324,13 +370,30 @@ def main() -> None:
                 str(seed),
                 "--device",
                 device,
-            ],
-            env,
+        ]
+        run_stage(
+            "retrain_oracle",
+            oracle_command,
+            inputs=[split_path, base_ckpt, finetune_metrics],
+            outputs=[oracle_ckpt, oracle_metrics],
         )
 
     for method in methods:
-        run_cmd(
-            [
+        unlearn_ckpt = (
+            unlearn_dir / "checkpoints" / f"unlearn_{method}.pt"
+        )
+        unlearn_metrics = (
+            unlearn_dir / "metrics" / f"unlearn_{method}_metrics.json"
+        )
+        unlearn_outputs: list[str | Path] = [
+            unlearn_ckpt,
+            unlearn_metrics,
+        ]
+        if method in {"h_tgsd", "h_tgsd_no_sibling_preservation"}:
+            unlearn_outputs.append(
+                unlearn_dir / "metrics" / f"{method}_basis.pt"
+            )
+        unlearn_command = [
                 sys.executable,
                 str(repo_root / "scripts" / "run_unlearning.py"),
                 "--config",
@@ -360,8 +423,12 @@ def main() -> None:
                 str(seed),
                 "--device",
                 device,
-            ],
-            env,
+        ]
+        run_stage(
+            f"unlearn:{method}",
+            unlearn_command,
+            inputs=[split_path, finetuned_ckpt],
+            outputs=unlearn_outputs,
         )
 
     candidate_args = [
@@ -380,8 +447,7 @@ def main() -> None:
             ]
         )
 
-    run_cmd(
-        [
+    evaluate_command = [
             sys.executable,
             str(repo_root / "scripts" / "evaluate_attacks.py"),
             "--config",
@@ -406,8 +472,31 @@ def main() -> None:
             "--device",
             device,
             *candidate_args,
-        ],
-        env,
+    ]
+    evaluation_inputs: list[str | Path] = [
+        split_path,
+        base_ckpt,
+        finetuned_ckpt,
+    ]
+    if retraining_enabled:
+        evaluation_inputs.append(oracle_ckpt)
+    evaluation_inputs.extend(
+        unlearn_dir / "checkpoints" / f"unlearn_{method}.pt"
+        for method in methods
+    )
+    evaluation_outputs: list[str | Path] = [
+        compare_dir / "comparison.csv",
+        compare_dir / "comparison.md",
+        compare_dir / "behavioral_tradeoff.png",
+        compare_dir / "plot_manifest.json",
+    ]
+    if any(method in {"h_tgsd", "h_tgsd_no_sibling_preservation"} for method in methods):
+        evaluation_outputs.append(compare_dir / "semantic_subspace.png")
+    run_stage(
+        "evaluate",
+        evaluate_command,
+        inputs=evaluation_inputs,
+        outputs=evaluation_outputs,
     )
 
     print(f"[done] comparison markdown: {compare_dir / 'comparison.md'}")

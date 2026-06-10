@@ -29,6 +29,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default=None)
     parser.add_argument("--show-commands", action="store_true")
     parser.add_argument("--write-manifest", action="store_true")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume each pipeline cell from validated stage receipts",
+    )
+    parser.add_argument(
+        "--force-stage",
+        action="append",
+        default=[],
+        help="Forward a forced stage to run_pipeline.py; repeat as needed",
+    )
     return parser.parse_args()
 
 
@@ -57,9 +68,11 @@ def build_pipeline_command(
     seed: int,
     device: str,
     root: Path,
+    resume: bool = False,
+    force_stages: list[str] | None = None,
 ) -> list[str]:
     paths = cell_paths(root, request, seed)
-    return [
+    command = [
         sys.executable,
         str(REPO_ROOT / "scripts" / "run_pipeline.py"),
         "--config",
@@ -77,6 +90,11 @@ def build_pipeline_command(
         "--device",
         device,
     ]
+    if resume:
+        command.append("--resume")
+    for stage in force_stages or []:
+        command.extend(["--force-stage", stage])
+    return command
 
 
 def write_manifest(
@@ -155,6 +173,8 @@ def main() -> None:
                     seed=seed,
                     device=device,
                     root=root,
+                    resume=args.resume,
+                    force_stages=args.force_stage,
                 )
                 print("[study]", " ".join(command), flush=True)
         return
@@ -169,6 +189,8 @@ def main() -> None:
         seed=args.seed,
         device=device,
         root=root,
+        resume=args.resume,
+        force_stages=args.force_stage,
     )
     print("[study]", " ".join(command), flush=True)
     subprocess.run(command, check=True, cwd=REPO_ROOT, env=os.environ.copy())
