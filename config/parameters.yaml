@@ -5,7 +5,7 @@ experiment:
 
 data:
   # Change only this value to switch the complete pipeline.
-  dataset: cifar10
+  dataset: cifar100
   data_dir: data
   retain_val_fraction: 0.1
   profiles:

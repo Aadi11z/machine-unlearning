@@ -686,7 +686,7 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
         raise RuntimeError("Fine-tuning completed without an evaluation snapshot")
     if cfg.smoke_mode and gradient_parameter_count == 0:
         raise RuntimeError("Smoke test found no non-zero trainable gradients")
-    checkpoint_payload = torch.load(best_path, map_location="cpu")
+    checkpoint_payload = torch.load(best_path, map_location="cpu", weights_only=False)
     checkpoint_payload_verified = {
         "model_config",
         "adapter_state_dict",

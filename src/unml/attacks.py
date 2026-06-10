@@ -244,7 +244,7 @@ def _load_evaluation_basis(
         if name not in H_TGSD_METHODS:
             continue
         payload = torch.load(
-            checkpoint, map_location="cpu", weights_only=True
+            checkpoint, map_location="cpu", weights_only=False
         )
         metadata = payload.get("extra", {}).get("h_tgsd_basis")
         if not isinstance(metadata, dict):

@@ -266,7 +266,7 @@ def run_checkpoint_probe(
         limit_per_class=limit_per_class,
     )
 
-    reference_payload = torch.load(reference_checkpoint, map_location="cpu")
+    reference_payload = torch.load(reference_checkpoint, map_location="cpu", weights_only=False)
     reference_model_name = reference_payload["model_config"]["model_name"]
     image_processor = CLIPImageProcessor.from_pretrained(
         reference_model_name,
