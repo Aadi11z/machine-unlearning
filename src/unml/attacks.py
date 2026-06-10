@@ -920,6 +920,172 @@ def _plot_tradeoff(df: pd.DataFrame, out_path: str) -> None:
     plt.close(fig)
 
 
+def _pareto_mask_minimize_x_maximize_y(
+    x_values: Sequence[float],
+    y_values: Sequence[float],
+) -> np.ndarray:
+    x = np.asarray(x_values, dtype=np.float64)
+    y = np.asarray(y_values, dtype=np.float64)
+    if x.shape != y.shape or x.ndim != 1:
+        raise ValueError("Pareto inputs must be equal-length vectors")
+    if not np.isfinite(x).all() or not np.isfinite(y).all():
+        raise ValueError("Pareto inputs must contain only finite values")
+    optimal = np.ones(x.shape[0], dtype=bool)
+    for index in range(x.shape[0]):
+        dominated = (
+            (x <= x[index])
+            & (y >= y[index])
+            & ((x < x[index]) | (y > y[index]))
+        )
+        optimal[index] = not bool(dominated.any())
+    return optimal
+
+
+def _behavioral_tradeoff_data(
+    df: pd.DataFrame,
+    class_groups: Dict[str, list[int]],
+) -> tuple[pd.DataFrame, str, str]:
+    preservation_metric = (
+        "sibling_test_macro_acc"
+        if class_groups["sibling"]
+        else "unrelated_test_macro_acc"
+    )
+    required = {"model", "target_test_acc", preservation_metric}
+    missing = sorted(required - set(df.columns))
+    if missing:
+        raise ValueError(
+            f"Behavioral tradeoff requires comparison columns: {missing}"
+        )
+    plot_data = df[
+        ["model", "target_test_acc", preservation_metric]
+    ].copy()
+    plot_data = plot_data.dropna(
+        subset=["target_test_acc", preservation_metric]
+    )
+    if plot_data.empty:
+        raise ValueError("Behavioral tradeoff has no complete model rows")
+    plot_data["behavior_pareto_optimal"] = (
+        _pareto_mask_minimize_x_maximize_y(
+            plot_data["target_test_acc"],
+            plot_data[preservation_metric],
+        )
+    )
+    preservation_label = (
+        "Sibling Macro Accuracy"
+        if class_groups["sibling"]
+        else "Unrelated-Retain Macro Accuracy"
+    )
+    return plot_data, preservation_metric, preservation_label
+
+
+def _plot_behavioral_tradeoff(
+    df: pd.DataFrame,
+    class_groups: Dict[str, list[int]],
+    out_path: Path,
+) -> Dict[str, Any]:
+    plot_data, preservation_metric, preservation_label = (
+        _behavioral_tradeoff_data(df, class_groups)
+    )
+    fig, ax = plt.subplots(figsize=(7, 5))
+    colors = np.where(
+        plot_data["behavior_pareto_optimal"], "#c43c39", "#4c78a8"
+    )
+    ax.scatter(
+        plot_data["target_test_acc"],
+        plot_data[preservation_metric],
+        c=colors,
+        s=85,
+        edgecolors="white",
+        linewidths=0.7,
+    )
+    for _, row in plot_data.iterrows():
+        ax.annotate(
+            str(row["model"]),
+            (row["target_test_acc"], row[preservation_metric]),
+            xytext=(5, 5),
+            textcoords="offset points",
+            fontsize=8,
+        )
+    ax.set_xlabel("Target Test Accuracy (lower is better)")
+    ax.set_ylabel(f"{preservation_label} (higher is better)")
+    ax.set_title("Behavioral Forgetting-Retention Tradeoff")
+    ax.grid(alpha=0.25)
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
+    return {
+        "path": str(out_path),
+        "target_metric": "target_test_acc",
+        "preservation_metric": preservation_metric,
+        "pareto_models": plot_data.loc[
+            plot_data["behavior_pareto_optimal"], "model"
+        ].astype(str).tolist(),
+    }
+
+
+def _plot_subspace_summary(
+    df: pd.DataFrame,
+    basis: EvaluationBasis,
+    out_path: Path,
+) -> Dict[str, Any]:
+    target_metric = (
+        "target_subspace_energy_target_vs_finetuned_ratio"
+    )
+    metrics = [target_metric]
+    labels = ["Target energy / fine-tuned"]
+    shared_metric = (
+        "shared_subspace_energy_related_vs_finetuned_ratio"
+    )
+    if basis.shared.shape[1] and shared_metric in df.columns:
+        metrics.append(shared_metric)
+        labels.append("Shared related energy / fine-tuned")
+    required = {"model", *metrics}
+    missing = sorted(required - set(df.columns))
+    if missing:
+        raise ValueError(
+            f"Subspace plot requires comparison columns: {missing}"
+        )
+    plot_data = df[["model", *metrics]].dropna(
+        subset=[target_metric]
+    )
+    if plot_data.empty:
+        raise ValueError("Subspace plot has no complete model rows")
+
+    positions = np.arange(len(plot_data))
+    width = 0.75 / len(metrics)
+    fig, ax = plt.subplots(figsize=(max(7, len(plot_data) * 0.85), 5))
+    for metric_index, (metric, label) in enumerate(zip(metrics, labels)):
+        offset = (metric_index - (len(metrics) - 1) / 2) * width
+        ax.bar(
+            positions + offset,
+            plot_data[metric],
+            width=width,
+            label=label,
+        )
+    ax.axhline(
+        1.0,
+        color="#555555",
+        linestyle="--",
+        linewidth=1,
+        label="Fine-tuned reference",
+    )
+    ax.set_xticks(positions, plot_data["model"], rotation=30, ha="right")
+    ax.set_ylabel("Energy ratio")
+    ax.set_title("Canonical Semantic-Subspace Energy")
+    ax.grid(axis="y", alpha=0.25)
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
+    return {
+        "path": str(out_path),
+        "metrics": metrics,
+        "basis_source_models": list(basis.source_models),
+    }
+
+
 def run_attack_comparison(cfg: AttackConfig) -> Dict[str, Any]:
     _validate_candidates(cfg.candidate_names, cfg.candidate_checkpoints)
     device = get_device(cfg.device)
@@ -1090,6 +1256,8 @@ def run_attack_comparison(cfg: AttackConfig) -> Dict[str, Any]:
     csv_path = output_dir / "comparison.csv"
     md_path = output_dir / "comparison.md"
     plot_path = output_dir / "utility_vs_forget.png"
+    behavioral_plot_path = output_dir / "behavioral_tradeoff.png"
+    subspace_plot_path = output_dir / "semantic_subspace.png"
 
     df.to_csv(csv_path, index=False)
 
@@ -1143,12 +1311,34 @@ def run_attack_comparison(cfg: AttackConfig) -> Dict[str, Any]:
         handle.write("\n")
 
     _plot_tradeoff(df, str(plot_path))
+    behavioral_plot = _plot_behavioral_tradeoff(
+        df, class_groups, behavioral_plot_path
+    )
+    subspace_plot = (
+        _plot_subspace_summary(df, evaluation_basis, subspace_plot_path)
+        if evaluation_basis is not None
+        else None
+    )
+    plot_manifest_path = output_dir / "plot_manifest.json"
+    with plot_manifest_path.open("w", encoding="utf-8") as handle:
+        json.dump(
+            {
+                "historical_composite_plot": str(plot_path),
+                "behavioral_tradeoff": behavioral_plot,
+                "semantic_subspace": subspace_plot,
+            },
+            handle,
+            indent=2,
+        )
 
     best_row = df.iloc[0].to_dict() if not df.empty else {}
     return {
         "csv_path": str(csv_path),
         "markdown_path": str(md_path),
         "plot_path": str(plot_path),
+        "behavioral_plot": behavioral_plot,
+        "subspace_plot": subspace_plot,
+        "plot_manifest_path": str(plot_manifest_path),
         "hierarchy_artifacts": hierarchy_artifacts,
         "oracle_artifacts": oracle_artifacts,
         "subspace_artifacts": subspace_artifacts,

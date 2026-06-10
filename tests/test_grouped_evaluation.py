@@ -4,15 +4,20 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from unml.attacks import (
     EvaluationBasis,
     _aligned_value_pairs,
     _aligned_score_pairs,
+    _behavioral_tradeoff_data,
     _group_classes,
     _load_evaluation_basis,
     _oracle_relative_distances,
+    _pareto_mask_minimize_x_maximize_y,
+    _plot_behavioral_tradeoff,
+    _plot_subspace_summary,
     _reference_relative_subspace_metrics,
     _run_metadata_columns,
     _safe_artifact_name,
@@ -437,3 +442,85 @@ def test_subspace_energy_and_reference_ratios_are_grouped(tmp_path) -> None:
     ] == pytest.approx(2.0)
     assert per_sample["index"].tolist() == [1, 2, 3]
     assert Path(paths["summary_path"]).exists()
+
+
+def test_behavioral_tradeoff_uses_request_specific_retention(tmp_path) -> None:
+    comparison = pd.DataFrame(
+        {
+            "model": ["method_a", "method_b", "dominated"],
+            "target_test_acc": [0.05, 0.10, 0.20],
+            "sibling_test_macro_acc": [0.80, 0.90, 0.70],
+            "unrelated_test_macro_acc": [0.95, 0.96, 0.94],
+        }
+    )
+    selective_groups = {
+        "target": [0],
+        "sibling": [1],
+        "unrelated": [2],
+        "retain": [1, 2],
+        "all": [0, 1, 2],
+    }
+
+    data, metric, label = _behavioral_tradeoff_data(
+        comparison, selective_groups
+    )
+    artifact = _plot_behavioral_tradeoff(
+        comparison,
+        selective_groups,
+        tmp_path / "behavioral.png",
+    )
+
+    assert metric == "sibling_test_macro_acc"
+    assert label == "Sibling Macro Accuracy"
+    assert data["behavior_pareto_optimal"].tolist() == [True, True, False]
+    assert artifact["pareto_models"] == ["method_a", "method_b"]
+    assert Path(artifact["path"]).exists()
+
+    superclass_groups = {**selective_groups, "sibling": []}
+    _, superclass_metric, _ = _behavioral_tradeoff_data(
+        comparison, superclass_groups
+    )
+    assert superclass_metric == "unrelated_test_macro_acc"
+
+
+def test_pareto_mask_rejects_nonfinite_inputs() -> None:
+    with pytest.raises(ValueError, match="finite"):
+        _pareto_mask_minimize_x_maximize_y(
+            [0.1, np.nan],
+            [0.9, 0.8],
+        )
+
+
+def test_subspace_summary_plots_canonical_energy_ratios(tmp_path) -> None:
+    comparison = pd.DataFrame(
+        {
+            "model": ["finetuned", "h_tgsd"],
+            "target_subspace_energy_target_vs_finetuned_ratio": [
+                1.0,
+                0.25,
+            ],
+            "shared_subspace_energy_related_vs_finetuned_ratio": [
+                1.0,
+                0.95,
+            ],
+        }
+    )
+    basis = EvaluationBasis(
+        target=np.asarray([[1.0], [0.0]]),
+        shared=np.asarray([[0.0], [1.0]]),
+        request_type="selective_class",
+        source_models=("h_tgsd",),
+    )
+
+    artifact = _plot_subspace_summary(
+        comparison,
+        basis,
+        tmp_path / "subspace.png",
+    )
+
+    assert artifact["metrics"] == [
+        "target_subspace_energy_target_vs_finetuned_ratio",
+        "shared_subspace_energy_related_vs_finetuned_ratio",
+    ]
+    assert artifact["basis_source_models"] == ["h_tgsd"]
+    assert Path(artifact["path"]).exists()

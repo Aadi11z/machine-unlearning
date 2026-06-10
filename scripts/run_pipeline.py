@@ -411,7 +411,15 @@ def main() -> None:
     )
 
     print(f"[done] comparison markdown: {compare_dir / 'comparison.md'}")
-    print(f"[done] comparison plot: {compare_dir / 'utility_vs_forget.png'}")
+    print(
+        f"[done] behavioral tradeoff: "
+        f"{compare_dir / 'behavioral_tradeoff.png'}"
+    )
+    print(
+        f"[done] semantic subspace: "
+        f"{compare_dir / 'semantic_subspace.png'}"
+    )
+    print(f"[done] plot manifest: {compare_dir / 'plot_manifest.json'}")
 
 
 if __name__ == "__main__":
