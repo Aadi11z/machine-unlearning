@@ -9,6 +9,7 @@ import pytest
 
 SCRIPTS = [
     "scripts/cache_model.py",
+    "scripts/preflight_run.py",
     "scripts/benchmark_runtime.py",
     "scripts/probe_checkpoint.py",
     "scripts/retrain_oracle.py",

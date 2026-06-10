@@ -23,6 +23,7 @@ from unml.config import (
     normalize_dataset_name,
     resolve_model_value,
 )
+from unml.preflight import write_cache_manifest
 
 
 def parse_args() -> argparse.Namespace:
@@ -64,6 +65,13 @@ def main() -> None:
     CLIPTokenizer.from_pretrained(model_name, local_files_only=True)
     CLIPModel.from_pretrained(model_name, local_files_only=True)
     print("[cache] offline verification passed", flush=True)
+    manifest_path = write_cache_manifest(
+        model_name=model_name,
+        dataset_name=dataset_name,
+        hf_home=os.environ.get("HF_HOME"),
+        repo_root=REPO_ROOT,
+    )
+    print(f"[cache] manifest={manifest_path}", flush=True)
 
 
 if __name__ == "__main__":
