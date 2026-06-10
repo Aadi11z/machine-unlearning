@@ -223,6 +223,40 @@ def _validate_candidates(
         raise ValueError(f"Candidate names must be unique: {duplicates}")
 
 
+def _run_metadata_columns(
+    metadata: Dict[str, Any],
+    checkpoint_path: str,
+    *,
+    dataset_name: str,
+    request_name: str | None,
+) -> Dict[str, Any]:
+    provenance = metadata.get("provenance", {})
+    runtime = metadata.get("runtime", metadata.get("benchmark", {}))
+    config = metadata.get(
+        "unlearning_config", metadata.get("training_config", {})
+    )
+    architecture = metadata.get("architecture", {})
+    checkpoint = Path(checkpoint_path)
+    return {
+        "dataset": dataset_name,
+        "request": request_name,
+        "seed": config.get("seed"),
+        "git_commit": provenance.get("git_commit"),
+        "gpu_name": provenance.get("gpu_name"),
+        "cuda_version": provenance.get("cuda_version"),
+        "runtime_seconds": runtime.get(
+            "total_seconds", runtime.get("training_seconds")
+        ),
+        "peak_gpu_memory_mb": runtime.get("peak_gpu_memory_mb"),
+        "trainable_parameter_count": architecture.get(
+            "trainable_parameter_count"
+        ),
+        "checkpoint_size_bytes": (
+            checkpoint.stat().st_size if checkpoint.is_file() else None
+        ),
+    }
+
+
 def _reference_outputs(
     model,
     loaders: Dict[str, DataLoader],
@@ -789,7 +823,20 @@ def run_attack_comparison(cfg: AttackConfig) -> Dict[str, Any]:
         hierarchy_artifacts[name] = _write_hierarchy_artifacts(
             output_dir, name, details
         )
-        records.append({"model": name, "checkpoint": ckpt_path, **metrics, "meta": str(meta)})
+        records.append(
+            {
+                "model": name,
+                "checkpoint": ckpt_path,
+                **_run_metadata_columns(
+                    meta,
+                    ckpt_path,
+                    dataset_name=dataset_spec.name,
+                    request_name=split.get("request_name"),
+                ),
+                **metrics,
+                "meta": json.dumps(meta, default=str, sort_keys=True),
+            }
+        )
         update_unlearn_with_attacks(name, metrics)
 
     df = pd.DataFrame(records).sort_values(by=["forget_quality", "utility_test_retain"], ascending=False)

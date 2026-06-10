@@ -351,6 +351,13 @@ def save_checkpoint(
     torch.save(payload, path)
 
 
+def update_checkpoint_extra(path: str, updates: Dict) -> None:
+    payload = torch.load(path, map_location="cpu")
+    extra = payload.setdefault("extra", {})
+    extra.update(updates)
+    torch.save(payload, path)
+
+
 def load_checkpoint(
     path: str, map_location: str | torch.device = "cpu"
 ) -> Tuple[LightweightVLM, Dict]:

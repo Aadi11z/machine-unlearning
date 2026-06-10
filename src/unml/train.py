@@ -28,6 +28,7 @@ from .model import (
     load_checkpoint,
     precision_context,
     save_checkpoint,
+    update_checkpoint_extra,
 )
 from helpers.tracker import log_finetune_epoch, log_finetune_summary
 from .utils import (
@@ -700,6 +701,15 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
         else "finetune_metrics.json"
     )
     benchmark["total_seconds"] = time.perf_counter() - run_started
+    update_checkpoint_extra(
+        str(best_path),
+        {
+            "benchmark": benchmark,
+            "provenance": provenance,
+            "training_config": resolved_config,
+        },
+    )
+    benchmark["checkpoint_size_bytes"] = best_path.stat().st_size
     save_json(
         {
             "best_retain_val_acc": best_metric,

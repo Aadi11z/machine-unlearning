@@ -10,6 +10,7 @@ from unml.attacks import (
     _aligned_score_pairs,
     _group_classes,
     _oracle_relative_distances,
+    _run_metadata_columns,
     _safe_artifact_name,
     _validate_candidates,
     _write_hierarchy_artifacts,
@@ -150,6 +151,35 @@ def test_candidate_contract_rejects_silent_truncation_and_overwrite() -> None:
         _validate_candidates(["one"], ["a.pt", "b.pt"])
     with pytest.raises(ValueError, match="unique"):
         _validate_candidates(["one", "one"], ["a.pt", "b.pt"])
+
+
+def test_run_metadata_columns_expose_paper_provenance(tmp_path) -> None:
+    checkpoint = tmp_path / "candidate.pt"
+    checkpoint.write_bytes(b"checkpoint")
+
+    columns = _run_metadata_columns(
+        {
+            "provenance": {
+                "git_commit": "abc123",
+                "gpu_name": "NVIDIA A100-SXM4-80GB",
+                "cuda_version": "12.4",
+            },
+            "runtime": {
+                "total_seconds": 12.5,
+                "peak_gpu_memory_mb": 2048.0,
+            },
+            "unlearning_config": {"seed": 123},
+            "architecture": {"trainable_parameter_count": 4096},
+        },
+        str(checkpoint),
+        dataset_name="cifar100",
+        request_name="rose_selective",
+    )
+
+    assert columns["seed"] == 123
+    assert columns["gpu_name"] == "NVIDIA A100-SXM4-80GB"
+    assert columns["runtime_seconds"] == pytest.approx(12.5)
+    assert columns["checkpoint_size_bytes"] == len(b"checkpoint")
 
 
 def test_hierarchy_artifacts_are_machine_readable(tmp_path) -> None:

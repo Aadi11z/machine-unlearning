@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import os
 import random
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Mapping
@@ -30,6 +31,7 @@ from .disentangle import (
 from .model import load_checkpoint, precision_context, save_checkpoint
 from helpers.tracker import log_unlearn_run
 from .utils import (
+    collect_run_provenance,
     format_metrics,
     get_device,
     move_to_device,
@@ -245,6 +247,7 @@ def _student_teacher_outputs(
 
 
 def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
+    run_started = time.perf_counter()
     if cfg.method not in UNLEARNING_METHODS:
         raise ValueError(f"Unsupported method={cfg.method}. Choose from {sorted(UNLEARNING_METHODS)}")
     split, dataset_spec, class_names = load_split_metadata(
@@ -257,6 +260,9 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
 
     set_seed(cfg.seed)
     device = get_device(cfg.device)
+    provenance = collect_run_provenance(device)
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
 
     output_dir = Path(cfg.output_dir)
     ckpt_dir = output_dir / "checkpoints"
@@ -370,6 +376,7 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
     component_history: Dict[str, list[float]] = {}
     show_progress = os.environ.get("UNML_TQDM", "0") == "1"
 
+    optimization_started = time.perf_counter()
     for step in trange(cfg.steps, desc=f"unlearn:{cfg.method}", disable=not show_progress):
         model.set_train_mode()
 
@@ -565,8 +572,10 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
                 f"loss={recent_loss:.4f}{component_text}",
                 flush=True,
             )
+    optimization_seconds = time.perf_counter() - optimization_started
 
     model.eval()
+    evaluation_started = time.perf_counter()
     summary_metrics = _eval_snapshot(
         model,
         loaders,
@@ -574,6 +583,7 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
         device,
         non_blocking=cfg.non_blocking,
     )
+    evaluation_seconds = time.perf_counter() - evaluation_started
     summary_metrics["avg_train_loss"] = float(sum(losses) / max(1, len(losses)))
     summary_metrics["steps"] = float(cfg.steps)
     summary_metrics.update(_mean_component_losses(component_history))
@@ -587,6 +597,23 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
     print(f"[unlearn:{cfg.method}] {format_metrics(summary_metrics)}", flush=True)
 
     ckpt_path = ckpt_dir / f"unlearn_{cfg.method}.pt"
+    runtime = {
+        "optimization_seconds": optimization_seconds,
+        "evaluation_seconds": evaluation_seconds,
+        "total_seconds": time.perf_counter() - run_started,
+        "steps": cfg.steps,
+        "steps_per_second": (
+            cfg.steps / optimization_seconds
+            if optimization_seconds > 0
+            else 0.0
+        ),
+        "peak_gpu_memory_mb": (
+            torch.cuda.max_memory_allocated(device) / (1024**2)
+            if device.type == "cuda"
+            else 0.0
+        ),
+    }
+    architecture = model.architecture_summary()
     save_checkpoint(
         str(ckpt_path),
         model,
@@ -597,7 +624,10 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
             "class_names": class_names,
             "finetuned_checkpoint": cfg.finetuned_checkpoint,
             "finetune_meta": finetune_meta,
-            "architecture": model.architecture_summary(),
+            "architecture": architecture,
+            "provenance": provenance,
+            "runtime": runtime,
+            "unlearning_config": cfg.__dict__,
             "cached_student_text_features": (
                 student_text_features is not None
             ),
@@ -605,6 +635,7 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
             "metrics": summary_metrics,
         },
     )
+    runtime["checkpoint_size_bytes"] = ckpt_path.stat().st_size
 
     metrics_path = metrics_dir / f"unlearn_{cfg.method}_metrics.json"
     save_json(
@@ -612,6 +643,9 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
             "method": cfg.method,
             "summary_metrics": summary_metrics,
             "config": cfg.__dict__,
+            "architecture": architecture,
+            "provenance": provenance,
+            "runtime": runtime,
             "basis_path": (
                 str(h_tgsd_basis_path)
                 if h_tgsd_basis_path is not None

@@ -10,6 +10,8 @@ import pytest
 SCRIPTS = [
     "scripts/cache_model.py",
     "scripts/preflight_run.py",
+    "scripts/summarize_study.py",
+    "scripts/run_study.py",
     "scripts/benchmark_runtime.py",
     "scripts/probe_checkpoint.py",
     "scripts/retrain_oracle.py",
@@ -96,3 +98,22 @@ def test_runtime_benchmark_show_commands_is_non_executing() -> None:
     assert "repeat_02" in proc.stdout
     assert "--smoke" in proc.stdout
     assert "--offline" in proc.stdout
+
+
+def test_study_show_commands_is_seed_and_request_isolated() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    cmd = [
+        sys.executable,
+        str(repo_root / "scripts/run_study.py"),
+        "--show-commands",
+    ]
+    proc = subprocess.run(
+        cmd, capture_output=True, text=True, check=False, cwd=repo_root
+    )
+
+    assert proc.returncode == 0
+    assert proc.stdout.count("[study]") == 6
+    assert "flowers_superclass/seed_42" in proc.stdout
+    assert "rose_selective/seed_456" in proc.stdout
+    assert "--split-path" in proc.stdout
+    assert "--output-root" in proc.stdout

@@ -155,3 +155,45 @@ probe:
   limit_per_class: 5
   top_k: 5
   save_images: true
+
+study:
+  dataset: cifar100
+  requests:
+    - flowers_superclass
+    - rose_selective
+  seeds:
+    - 42
+    - 123
+    - 456
+  methods:
+    - finetuned
+    - retrain_oracle
+    - retain_only
+    - ga_kl
+    - counterfactual_rebind
+    - entropy_rebind
+    - h_tgsd
+    - h_tgsd_no_sibling_preservation
+  primary_method: h_tgsd
+  baseline_methods:
+    - retain_only
+    - ga_kl
+    - counterfactual_rebind
+    - entropy_rebind
+    - h_tgsd_no_sibling_preservation
+  metrics:
+    - target_test_acc
+    - sibling_test_macro_acc
+    - unrelated_test_macro_acc
+    - utility_test_all
+    - mia_auc_confidence
+    - mia_auc_loss
+    - oracle_prediction_kl_all
+    - oracle_embedding_cosine_all
+    - runtime_seconds
+    - peak_gpu_memory_mb
+    - trainable_parameter_count
+    - checkpoint_size_bytes
+  bootstrap_samples: 10000
+  confidence: 0.95
+  bootstrap_seed: 2026
