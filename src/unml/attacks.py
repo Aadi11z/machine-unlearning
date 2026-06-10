@@ -30,6 +30,9 @@ from helpers.tracker import update_unlearn_with_attacks
 from .utils import get_device
 
 
+H_TGSD_METHODS = {"h_tgsd", "h_tgsd_no_sibling_preservation"}
+
+
 @dataclass
 class AttackConfig:
     data_dir: str
@@ -49,6 +52,14 @@ class AttackConfig:
     non_blocking: bool = False
     max_attack_samples: int = 4000
     device: str = "auto"
+
+
+@dataclass(frozen=True)
+class EvaluationBasis:
+    target: np.ndarray
+    shared: np.ndarray
+    request_type: str
+    source_models: tuple[str, ...]
 
 
 def _safe_auc(y_true: np.ndarray, scores: np.ndarray) -> float:
@@ -221,6 +232,167 @@ def _validate_candidates(
     )
     if duplicates:
         raise ValueError(f"Candidate names must be unique: {duplicates}")
+
+
+def _load_evaluation_basis(
+    names: Sequence[str],
+    checkpoints: Sequence[str],
+    split: Dict[str, Any],
+) -> EvaluationBasis | None:
+    candidates = []
+    for name, checkpoint in zip(names, checkpoints):
+        if name not in H_TGSD_METHODS:
+            continue
+        payload = torch.load(
+            checkpoint, map_location="cpu", weights_only=True
+        )
+        metadata = payload.get("extra", {}).get("h_tgsd_basis")
+        if not isinstance(metadata, dict):
+            raise ValueError(
+                f"{name} checkpoint does not contain H-TGSD basis metadata"
+            )
+        target = np.asarray(metadata["target"], dtype=np.float64)
+        shared = np.asarray(metadata["shared"], dtype=np.float64)
+        if target.ndim != 2 or target.shape[1] == 0:
+            raise ValueError("H-TGSD target basis must be a non-empty matrix")
+        if shared.ndim != 2 or shared.shape[0] != target.shape[0]:
+            raise ValueError("H-TGSD shared basis dimension mismatch")
+        request_type = str(metadata.get("request_type", ""))
+        if request_type != str(split.get("request_type", "")):
+            raise ValueError(
+                f"H-TGSD basis request_type={request_type!r} does not match "
+                f"split request_type={split.get('request_type')!r}"
+            )
+        if list(metadata.get("target_classes", [])) != list(
+            split.get("target_classes", split.get("forget_classes", []))
+        ):
+            raise ValueError("H-TGSD basis target classes do not match split")
+        if list(metadata.get("sibling_classes", [])) != list(
+            split.get("sibling_classes", [])
+        ):
+            raise ValueError("H-TGSD basis sibling classes do not match split")
+        candidates.append((name, target, shared, request_type))
+    if not candidates:
+        return None
+    reference = candidates[0]
+    for name, target, shared, request_type in candidates[1:]:
+        if (
+            request_type != reference[3]
+            or target.shape != reference[1].shape
+            or shared.shape != reference[2].shape
+            or not np.allclose(target, reference[1], atol=1e-6, rtol=1e-5)
+            or not np.allclose(shared, reference[2], atol=1e-6, rtol=1e-5)
+        ):
+            raise ValueError(
+                f"H-TGSD basis mismatch between {reference[0]} and {name}"
+            )
+    return EvaluationBasis(
+        target=reference[1],
+        shared=reference[2],
+        request_type=reference[3],
+        source_models=tuple(candidate[0] for candidate in candidates),
+    )
+
+
+def _subspace_energy_metrics(
+    outputs: Dict[str, np.ndarray | float],
+    basis: EvaluationBasis,
+    class_groups: Dict[str, list[int]],
+) -> tuple[Dict[str, float | int | None], pd.DataFrame]:
+    embeddings = np.asarray(outputs.get("embeddings"), dtype=np.float64)
+    labels = np.asarray(outputs.get("labels"), dtype=np.int64)
+    indices = np.asarray(outputs.get("indices"), dtype=np.int64)
+    if embeddings.ndim != 2:
+        raise ValueError("Subspace evaluation requires embedding outputs")
+    if embeddings.shape[1] != basis.target.shape[0]:
+        raise ValueError("Embedding and semantic-basis dimensions differ")
+    if labels.shape[0] != embeddings.shape[0] or indices.shape[0] != labels.shape[0]:
+        raise ValueError("Subspace evaluation output lengths differ")
+
+    target_energy = np.square(embeddings @ basis.target).sum(axis=1)
+    shared_energy = (
+        np.square(embeddings @ basis.shared).sum(axis=1)
+        if basis.shared.shape[1]
+        else np.zeros(embeddings.shape[0], dtype=np.float64)
+    )
+    hierarchy_group = np.full(labels.shape, "unassigned", dtype=object)
+    for group_name in ("target", "sibling", "unrelated"):
+        hierarchy_group[np.isin(labels, class_groups[group_name])] = group_name
+    if np.any(hierarchy_group == "unassigned"):
+        raise ValueError("Some labels are not assigned to a hierarchy group")
+
+    per_sample = pd.DataFrame(
+        {
+            "index": indices,
+            "label": labels,
+            "hierarchy_group": hierarchy_group,
+            "target_subspace_energy": target_energy,
+            "shared_subspace_energy": shared_energy,
+        }
+    ).sort_values("index")
+    measurement_groups = {
+        **class_groups,
+        "related": sorted(
+            set(class_groups["target"]) | set(class_groups["sibling"])
+        ),
+    }
+    metrics: Dict[str, float | int | None] = {
+        "target_basis_rank": int(basis.target.shape[1]),
+        "shared_basis_rank": int(basis.shared.shape[1]),
+    }
+    for group_name in (
+        "target",
+        "sibling",
+        "related",
+        "unrelated",
+        "retain",
+        "all",
+    ):
+        mask = np.isin(labels, measurement_groups[group_name])
+        metrics[f"subspace_{group_name}_n"] = int(mask.sum())
+        metrics[f"target_subspace_energy_{group_name}"] = (
+            float(target_energy[mask].mean()) if mask.any() else None
+        )
+        metrics[f"shared_subspace_energy_{group_name}"] = (
+            float(shared_energy[mask].mean())
+            if mask.any() and basis.shared.shape[1]
+            else None
+        )
+    return metrics, per_sample
+
+
+def _reference_relative_subspace_metrics(
+    candidate: Dict[str, float | int | None],
+    reference: Dict[str, float | int | None],
+    reference_name: str,
+) -> Dict[str, float | None]:
+    metrics: Dict[str, float | None] = {}
+    for energy_name in ("target_subspace_energy", "shared_subspace_energy"):
+        for group_name in (
+            "target",
+            "sibling",
+            "related",
+            "unrelated",
+            "retain",
+            "all",
+        ):
+            key = f"{energy_name}_{group_name}"
+            current = candidate.get(key)
+            baseline = reference.get(key)
+            prefix = f"{key}_vs_{reference_name}"
+            if current is None or baseline is None:
+                metrics[f"{prefix}_delta"] = None
+                metrics[f"{prefix}_ratio"] = None
+            else:
+                current_value = float(current)
+                baseline_value = float(baseline)
+                metrics[f"{prefix}_delta"] = current_value - baseline_value
+                metrics[f"{prefix}_ratio"] = (
+                    current_value / baseline_value
+                    if abs(baseline_value) > 1e-12
+                    else None
+                )
+    return metrics
 
 
 def _run_metadata_columns(
@@ -699,6 +871,39 @@ def _write_oracle_artifacts(
     }
 
 
+def _write_subspace_artifacts(
+    output_dir: Path,
+    model_name: str,
+    basis: EvaluationBasis,
+    metrics: Dict[str, float | int | None],
+    per_sample: pd.DataFrame,
+) -> Dict[str, str]:
+    artifact_name = _safe_artifact_name(model_name)
+    subspace_dir = output_dir / "subspace"
+    subspace_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = subspace_dir / f"{artifact_name}_summary.json"
+    per_sample_path = subspace_dir / f"{artifact_name}_per_sample.csv"
+    per_sample.to_csv(per_sample_path, index=False)
+    with summary_path.open("w", encoding="utf-8") as handle:
+        json.dump(
+            {
+                "model": model_name,
+                "request_type": basis.request_type,
+                "basis_source_models": list(basis.source_models),
+                "target_basis_rank": int(basis.target.shape[1]),
+                "shared_basis_rank": int(basis.shared.shape[1]),
+                "energy_definition": "squared L2 norm of basis coordinates",
+                "metrics": metrics,
+            },
+            handle,
+            indent=2,
+        )
+    return {
+        "summary_path": str(summary_path),
+        "per_sample_path": str(per_sample_path),
+    }
+
+
 def _plot_tradeoff(df: pd.DataFrame, out_path: str) -> None:
     fig, ax = plt.subplots(figsize=(7, 5))
     ax.scatter(df["utility_test_retain"], df["forget_quality"], s=80)
@@ -747,6 +952,9 @@ def run_attack_comparison(cfg: AttackConfig) -> Dict[str, Any]:
     validate_checkpoint_dataset(base_meta, dataset_spec.name, cfg.base_checkpoint)
     base_model = base_model.to(device).eval()
     class_groups = _group_classes(split, len(class_names))
+    evaluation_basis = _load_evaluation_basis(
+        cfg.candidate_names, cfg.candidate_checkpoints, split
+    )
     base_outputs = _reference_outputs(
         base_model,
         loaders,
@@ -761,6 +969,11 @@ def run_attack_comparison(cfg: AttackConfig) -> Dict[str, Any]:
     records: List[Dict[str, float | int | str | None]] = []
     hierarchy_artifacts = {}
     oracle_artifacts = {}
+    subspace_artifacts = {}
+    subspace_metrics_by_model: Dict[
+        str, Dict[str, float | int | None]
+    ] = {}
+    subspace_samples_by_model: Dict[str, pd.DataFrame] = {}
     oracle_outputs = None
     oracle_index = (
         list(cfg.candidate_names).index("retrain_oracle")
@@ -820,6 +1033,13 @@ def run_attack_comparison(cfg: AttackConfig) -> Dict[str, Any]:
             oracle_artifacts[name] = _write_oracle_artifacts(
                 output_dir, name, oracle_metrics, per_sample
             )
+        if evaluation_basis is not None:
+            subspace_metrics, subspace_samples = _subspace_energy_metrics(
+                details["test_outputs"], evaluation_basis, class_groups
+            )
+            metrics.update(subspace_metrics)
+            subspace_metrics_by_model[name] = subspace_metrics
+            subspace_samples_by_model[name] = subspace_samples
         hierarchy_artifacts[name] = _write_hierarchy_artifacts(
             output_dir, name, details
         )
@@ -838,6 +1058,32 @@ def run_attack_comparison(cfg: AttackConfig) -> Dict[str, Any]:
             }
         )
         update_unlearn_with_attacks(name, metrics)
+
+    if evaluation_basis is not None:
+        references = {
+            reference_name: subspace_metrics_by_model[reference_name]
+            for reference_name in ("finetuned", "retrain_oracle")
+            if reference_name in subspace_metrics_by_model
+        }
+        for record in records:
+            name = str(record["model"])
+            model_metrics = subspace_metrics_by_model[name]
+            relative_metrics: Dict[str, float | None] = {}
+            for reference_name, reference_metrics in references.items():
+                relative_metrics.update(
+                    _reference_relative_subspace_metrics(
+                        model_metrics, reference_metrics, reference_name
+                    )
+                )
+            record.update(relative_metrics)
+            complete_metrics = {**model_metrics, **relative_metrics}
+            subspace_artifacts[name] = _write_subspace_artifacts(
+                output_dir,
+                name,
+                evaluation_basis,
+                complete_metrics,
+                subspace_samples_by_model[name],
+            )
 
     df = pd.DataFrame(records).sort_values(by=["forget_quality", "utility_test_retain"], ascending=False)
 
@@ -879,6 +1125,20 @@ def run_attack_comparison(cfg: AttackConfig) -> Dict[str, Any]:
                     "oracle_embedding_cosine_all",
                 ]
             )
+        if evaluation_basis is not None:
+            markdown_columns.extend(
+                [
+                    "target_subspace_energy_target",
+                    "target_subspace_energy_target_vs_finetuned_ratio",
+                    "target_subspace_energy_target_vs_retrain_oracle_ratio",
+                    "shared_subspace_energy_related",
+                    "shared_subspace_energy_related_vs_finetuned_ratio",
+                    "shared_subspace_energy_related_vs_retrain_oracle_ratio",
+                ]
+            )
+        markdown_columns = [
+            column for column in markdown_columns if column in df.columns
+        ]
         handle.write(df[markdown_columns].to_markdown(index=False))
         handle.write("\n")
 
@@ -891,5 +1151,6 @@ def run_attack_comparison(cfg: AttackConfig) -> Dict[str, Any]:
         "plot_path": str(plot_path),
         "hierarchy_artifacts": hierarchy_artifacts,
         "oracle_artifacts": oracle_artifacts,
+        "subspace_artifacts": subspace_artifacts,
         "best_model": str(best_row.get("model", "")),
     }

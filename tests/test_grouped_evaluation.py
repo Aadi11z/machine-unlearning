@@ -1,20 +1,26 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 from unml.attacks import (
+    EvaluationBasis,
     _aligned_value_pairs,
     _aligned_score_pairs,
     _group_classes,
+    _load_evaluation_basis,
     _oracle_relative_distances,
+    _reference_relative_subspace_metrics,
     _run_metadata_columns,
     _safe_artifact_name,
+    _subspace_energy_metrics,
     _validate_candidates,
     _write_hierarchy_artifacts,
     _write_oracle_artifacts,
+    _write_subspace_artifacts,
 )
 from unml.evaluate import summarize_classification_group
 
@@ -323,3 +329,111 @@ def test_oracle_distances_reject_label_mismatch_after_alignment() -> None:
 
     with pytest.raises(ValueError, match="labels disagree"):
         _oracle_relative_distances(candidate, oracle, groups)
+
+
+def test_load_evaluation_basis_requires_identical_h_tgsd_bases(
+    tmp_path,
+) -> None:
+    import torch
+
+    metadata = {
+        "request_type": "selective_class",
+        "target": torch.tensor([[1.0], [0.0]]),
+        "shared": torch.tensor([[0.0], [1.0]]),
+        "target_classes": [0],
+        "sibling_classes": [1],
+    }
+    paths = []
+    for name in ("h_tgsd", "h_tgsd_no_sibling_preservation"):
+        path = tmp_path / f"{name}.pt"
+        torch.save({"extra": {"h_tgsd_basis": metadata}}, path)
+        paths.append(str(path))
+
+    basis = _load_evaluation_basis(
+        ["h_tgsd", "h_tgsd_no_sibling_preservation"],
+        paths,
+        {
+            "request_type": "selective_class",
+            "target_classes": [0],
+            "sibling_classes": [1],
+        },
+    )
+
+    assert basis is not None
+    assert basis.target.shape == (2, 1)
+    assert basis.source_models == (
+        "h_tgsd",
+        "h_tgsd_no_sibling_preservation",
+    )
+
+    payload = torch.load(
+        paths[1], map_location="cpu", weights_only=True
+    )
+    payload["extra"]["h_tgsd_basis"]["target"] = torch.tensor(
+        [[0.0], [1.0]]
+    )
+    torch.save(payload, paths[1])
+    with pytest.raises(ValueError, match="basis mismatch"):
+        _load_evaluation_basis(
+            ["h_tgsd", "h_tgsd_no_sibling_preservation"],
+            paths,
+            {
+                "request_type": "selective_class",
+                "target_classes": [0],
+                "sibling_classes": [1],
+            },
+        )
+
+
+def test_subspace_energy_and_reference_ratios_are_grouped(tmp_path) -> None:
+    outputs = _rich_outputs(
+        indices=[3, 2, 1],
+        labels=[2, 1, 0],
+        probabilities=[
+            [0.1, 0.1, 0.8],
+            [0.1, 0.8, 0.1],
+            [0.8, 0.1, 0.1],
+        ],
+        embeddings=[[1.0, 1.0], [0.0, 1.0], [1.0, 0.0]],
+    )
+    basis = EvaluationBasis(
+        target=np.asarray([[1.0], [0.0]]),
+        shared=np.asarray([[0.0], [1.0]]),
+        request_type="selective_class",
+        source_models=("h_tgsd",),
+    )
+    groups = {
+        "target": [0],
+        "sibling": [1],
+        "unrelated": [2],
+        "retain": [1, 2],
+        "all": [0, 1, 2],
+    }
+
+    metrics, per_sample = _subspace_energy_metrics(
+        outputs, basis, groups
+    )
+    relative = _reference_relative_subspace_metrics(
+        metrics,
+        {
+            **metrics,
+            "target_subspace_energy_target": 2.0,
+            "shared_subspace_energy_related": 0.25,
+        },
+        "finetuned",
+    )
+    paths = _write_subspace_artifacts(
+        tmp_path, "h/tgsd", basis, {**metrics, **relative}, per_sample
+    )
+
+    assert metrics["target_subspace_energy_target"] == pytest.approx(1.0)
+    assert metrics["shared_subspace_energy_sibling"] == pytest.approx(1.0)
+    assert metrics["shared_subspace_energy_related"] == pytest.approx(0.5)
+    assert relative[
+        "target_subspace_energy_target_vs_finetuned_ratio"
+    ] == pytest.approx(0.5)
+    assert relative[
+        "shared_subspace_energy_related_vs_finetuned_ratio"
+    ] == pytest.approx(2.0)
+    assert per_sample["index"].tolist() == [1, 2, 3]
+    assert Path(paths["summary_path"]).exists()
