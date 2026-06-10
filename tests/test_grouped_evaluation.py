@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from unml.attacks import (
+    _aligned_value_pairs,
     _aligned_score_pairs,
     _group_classes,
     _oracle_relative_distances,
@@ -89,6 +90,32 @@ def test_delta_scores_align_by_dataset_index_not_loader_order() -> None:
 
     assert current_scores.tolist() == pytest.approx([0.2, 0.9])
     assert reference_scores.tolist() == pytest.approx([0.4, 0.5])
+
+
+def test_losses_align_by_dataset_index_not_loader_order() -> None:
+    current = _outputs(
+        labels=[3, 3],
+        predictions=[3, 3],
+        indices=[20, 10],
+    )
+    reference = _outputs(
+        labels=[3, 3],
+        predictions=[3, 3],
+        indices=[10, 20],
+    )
+    current["sample_losses"] = np.asarray([1.2, 0.1], dtype=np.float32)
+    reference["sample_losses"] = np.asarray([0.4, 0.8], dtype=np.float32)
+
+    current_losses, reference_losses = _aligned_value_pairs(
+        current,
+        reference,
+        class_ids=[3],
+        max_samples=10,
+        value_key="sample_losses",
+    )
+
+    assert current_losses.tolist() == pytest.approx([1.2, 0.1])
+    assert reference_losses.tolist() == pytest.approx([0.8, 0.4])
 
 
 def test_group_classes_uses_hierarchy_metadata_and_fallback() -> None:

@@ -97,6 +97,7 @@ def test_collected_outputs_include_index_aligned_predictions_and_scores() -> Non
     assert outputs["labels"].tolist() == [0, 0]
     assert outputs["predictions"].tolist() == [0, 0]
     assert outputs["true_scores"].shape == (2,)
+    assert outputs["sample_losses"].shape == (2,)
 
 
 def test_rich_outputs_reuse_one_image_encoding_per_batch() -> None:

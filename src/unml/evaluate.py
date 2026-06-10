@@ -129,6 +129,7 @@ def collect_classification_outputs(
             "predictions": np.empty(0, dtype=np.int64),
             "indices": np.empty(0, dtype=np.int64),
             "true_scores": np.empty(0, dtype=np.float32),
+            "sample_losses": np.empty(0, dtype=np.float32),
             "loss": 0.0,
         }
         if include_probabilities:
@@ -167,6 +168,9 @@ def collect_classification_outputs(
         "predictions": predictions.numpy().astype(np.int64, copy=False),
         "indices": indices.numpy().astype(np.int64, copy=False),
         "true_scores": true_scores.numpy().astype(np.float32, copy=False),
+        "sample_losses": sample_losses.numpy().astype(
+            np.float32, copy=False
+        ),
         "loss": float(sample_losses.mean().item()),
     }
     if all_probabilities is not None:
