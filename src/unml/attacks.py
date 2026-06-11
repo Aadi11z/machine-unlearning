@@ -1043,15 +1043,32 @@ def _plot_subspace_summary(
     required = {"model", *metrics}
     missing = sorted(required - set(df.columns))
     if missing:
-        raise ValueError(
-            f"Subspace plot requires comparison columns: {missing}"
+        print(
+            f"[warn] Skipping subspace plot because required columns are missing: {missing}",
+            flush=True,
         )
+        return {
+            "path": None,
+            "metrics": metrics,
+            "basis_source_models": list(basis.source_models),
+            "skipped": True,
+            "reason": f"missing columns: {missing}",
+        }
     plot_data = df[["model", *metrics]].dropna(
         subset=[target_metric]
     )
     if plot_data.empty:
-        raise ValueError("Subspace plot has no complete model rows")
-
+        print(
+            "[warn] Skipping subspace plot because no complete model rows are available",
+            flush=True,
+        )
+        return {
+            "path": None,
+            "metrics": metrics,
+            "basis_source_models": list(basis.source_models),
+            "skipped": True,
+            "reason": "no complete model rows",
+        }
     positions = np.arange(len(plot_data))
     width = 0.75 / len(metrics)
     fig, ax = plt.subplots(figsize=(max(7, len(plot_data) * 0.85), 5))
