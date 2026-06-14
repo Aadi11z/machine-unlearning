@@ -8,13 +8,13 @@ import pytest
 
 
 SCRIPTS = [
-    "scripts/cache_model.py",
-    "scripts/preflight_run.py",
-    "scripts/summarize_study.py",
+    "helpers/cache_model.py",
+    "helpers/preflight_run.py",
+    "helpers/summarize_study.py",
     "scripts/run_study.py",
-    "scripts/benchmark_runtime.py",
-    "scripts/probe_checkpoint.py",
-    "scripts/retrain_oracle.py",
+    "helpers/benchmark_runtime.py",
+    "helpers/probe_checkpoint.py",
+    "helpers/retrain_oracle.py",
     "scripts/prepare_data.py",
     "scripts/train_vlm.py",
     "scripts/run_unlearning.py",
@@ -77,7 +77,7 @@ def test_runtime_benchmark_show_commands_is_non_executing() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     cmd = [
         sys.executable,
-        str(repo_root / "scripts/benchmark_runtime.py"),
+        str(repo_root / "helpers/benchmark_runtime.py"),
         "--dataset",
         "cifar100",
         "--request",

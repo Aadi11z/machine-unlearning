@@ -26,9 +26,11 @@ research hypothesis until the configured GPU experiments are complete.
 - `src/unml/disentangle.py`: H-TGSD prototype, basis, and loss functions
 - `src/unml/attacks.py`: membership-inference attacks + tradeoff plot/report
 - `src/unml/probe.py`: sample- and class-level checkpoint inspection
-- `scripts/*.py`: CLI entrypoints
+- `scripts/*.py`: main pipeline/study CLI entrypoints
+- `helpers/*.py`: support CLI entrypoints for cache, preflight, probing,
+  benchmarking, oracle convenience, and study summarization
 - `scripts/run_pipeline.py`: full experiment orchestration
-- `scripts/retrain_oracle.py`: retained-data retraining reference
+- `helpers/retrain_oracle.py`: retained-data retraining reference
 
 
 ## Tests
@@ -105,7 +107,7 @@ python scripts/run_pipeline.py
 Run only the oracle after a completed fine-tuning run:
 
 ```bash
-python scripts/retrain_oracle.py --offline --device cuda
+python helpers/retrain_oracle.py --offline --device cuda
 ```
 
 Oracle artifacts are isolated under `retrain_oracle/` and are automatically
@@ -115,7 +117,7 @@ Before requesting a GPU on Sharanga, populate and verify the Hugging Face
 cache on the login node:
 
 ```bash
-python scripts/cache_model.py
+python helpers/cache_model.py
 ```
 
 Run the bounded infrastructure smoke test through a GPU batch job:
@@ -150,7 +152,7 @@ Throughput improvement must be measured on Sharanga before it is reported.
 Run the controlled runtime matrix on one A100 after caching the model:
 
 ```bash
-python scripts/benchmark_runtime.py \
+python helpers/benchmark_runtime.py \
   --dataset cifar100 \
   --request flowers_superclass \
   --repeats 3
@@ -224,7 +226,7 @@ Manually inspect selected examples across the fine-tuned reference and
 unlearned checkpoints:
 
 ```bash
-python scripts/probe_checkpoint.py --offline --device cuda
+python helpers/probe_checkpoint.py --offline --device cuda
 ```
 
 The default test probe selects examples from the configured target classes.

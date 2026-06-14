@@ -62,7 +62,7 @@ def validate_cache_manifest(
     if not path.is_file():
         raise FileNotFoundError(
             f"Offline cache manifest not found: {path}. Run "
-            f"`python scripts/cache_model.py --dataset {dataset_name}` "
+            f"`python helpers/cache_model.py --dataset {dataset_name}` "
             "on a network-enabled login node first."
         )
     with path.open(encoding="utf-8") as handle:
