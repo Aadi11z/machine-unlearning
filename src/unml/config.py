@@ -14,8 +14,9 @@ DEFAULT_FORGET_CLASSES = {
 
 
 def load_runtime_config(path: str | None) -> dict[str, Any]:
+    ''' Returns the config/parameters.yaml safely as a dict/list payload '''
     if not path:
-        return {}
+        raise TypeError(f"Path object not passed correctly: {path}")
 
     cfg_path = Path(path)
     if not cfg_path.exists():
