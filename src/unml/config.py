@@ -38,7 +38,12 @@ def nested_get(payload: dict[str, Any], path: Sequence[str]) -> Any:
     return value
 
 
-def resolve_value(cli_value: Any, payload: dict[str, Any], path: Sequence[str], fallback: Any) -> Any:
+def resolve_value(
+    cli_value: Any,
+    payload: dict[str, Any],
+    path: Sequence[str],
+    fallback: Any,
+) -> Any:
     if cli_value is not None:
         return cli_value
     yaml_value = nested_get(payload, path)
@@ -47,19 +52,81 @@ def resolve_value(cli_value: Any, payload: dict[str, Any], path: Sequence[str], 
     return fallback
 
 
-def resolve_str_list(cli_value: str | None, payload: dict[str, Any], path: Sequence[str], fallback: Iterable[str]) -> list[str]:
+def _parse_str_list(
+    value: str | Iterable[Any] | None,
+    *,
+    where: str,
+) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, Iterable):
+        return [str(item).strip() for item in value if str(item).strip()]
+    raise ValueError(f"Expected list or comma-separated string at {where}")
+
+
+def resolve_str_list(
+    cli_value: str | None,
+    payload: dict[str, Any],
+    path: Sequence[str],
+    fallback: Iterable[str],
+) -> list[str]:
     if cli_value is not None:
-        return [item.strip() for item in cli_value.split(",") if item.strip()]
+        return _parse_str_list(cli_value, where="CLI argument")
 
     yaml_value = nested_get(payload, path)
     if yaml_value is not None:
-        if isinstance(yaml_value, str):
-            return [item.strip() for item in yaml_value.split(",") if item.strip()]
-        if isinstance(yaml_value, list):
-            return [str(item).strip() for item in yaml_value if str(item).strip()]
-        raise ValueError(f"Expected list or comma-separated string at {'.'.join(path)}")
+        return _parse_str_list(yaml_value, where=".".join(path))
 
-    return [item.strip() for item in fallback if str(item).strip()]
+    return _parse_str_list(list(fallback), where="fallback")
+
+
+def _profile_value(
+    payload: dict[str, Any],
+    *,
+    dataset_name: str,
+    scope: str,
+    key: str,
+) -> Any:
+    return nested_get(payload, (scope, "profiles", dataset_name, key))
+
+
+def _shared_value(
+    payload: dict[str, Any],
+    *,
+    scope: str,
+    key: str,
+) -> Any:
+    return nested_get(payload, (scope, key))
+
+
+def _resolve_scoped_value(
+    cli_value: Any,
+    payload: dict[str, Any],
+    *,
+    dataset_name: str,
+    scope: str,
+    key: str,
+    fallback: Any,
+) -> Any:
+    if cli_value is not None:
+        return cli_value
+
+    profile_value = _profile_value(
+        payload,
+        dataset_name=dataset_name,
+        scope=scope,
+        key=key,
+    )
+    if profile_value is not None:
+        return profile_value
+
+    shared_value = _shared_value(payload, scope=scope, key=key)
+    if shared_value is not None:
+        return shared_value
+
+    return fallback
 
 
 def resolve_section_str_list(
@@ -71,30 +138,18 @@ def resolve_section_str_list(
     fallback: Iterable[str],
 ) -> list[str]:
     if cli_value is not None:
-        return [
-            item.strip() for item in cli_value.split(",") if item.strip()
-        ]
-    value = resolve_section_value(
+        return _parse_str_list(cli_value, where="CLI argument")
+    value = _resolve_scoped_value(
         None,
         payload,
-        dataset_name,
-        section,
-        key,
-        None,
+        dataset_name=normalize_dataset_name(dataset_name),
+        scope=section,
+        key=key,
+        fallback=None,
     )
     if value is None:
-        return [
-            str(item).strip()
-            for item in fallback
-            if str(item).strip()
-        ]
-    if isinstance(value, str):
-        return [item.strip() for item in value.split(",") if item.strip()]
-    if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
-    raise ValueError(
-        f"Expected list or comma-separated string at {section}.{key}"
-    )
+        return _parse_str_list(list(fallback), where="fallback")
+    return _parse_str_list(value, where=f"{section}.{key}")
 
 
 def parse_forget_classes(raw: str | Sequence[int]) -> list[int]:
@@ -237,19 +292,14 @@ def resolve_dataset_value(
     key: str,
     fallback: Any,
 ) -> Any:
-    if cli_value is not None:
-        return cli_value
-
-    dataset_name = normalize_dataset_name(dataset_name)
-    profile_value = nested_get(payload, ("data", "profiles", dataset_name, key))
-    if profile_value is not None:
-        return profile_value
-
-    shared_value = nested_get(payload, ("data", key))
-    if shared_value is not None:
-        return shared_value
-
-    return fallback
+    return _resolve_scoped_value(
+        cli_value,
+        payload,
+        dataset_name=normalize_dataset_name(dataset_name),
+        scope="data",
+        key=key,
+        fallback=fallback,
+    )
 
 
 def resolve_model_value(
@@ -260,21 +310,14 @@ def resolve_model_value(
     fallback: Any,
 ) -> Any:
     """Resolve a model setting from CLI, dataset profile, shared config, fallback."""
-    if cli_value is not None:
-        return cli_value
-
-    dataset_name = normalize_dataset_name(dataset_name)
-    profile_value = nested_get(
-        payload, ("model", "profiles", dataset_name, key)
+    return _resolve_scoped_value(
+        cli_value,
+        payload,
+        dataset_name=normalize_dataset_name(dataset_name),
+        scope="model",
+        key=key,
+        fallback=fallback,
     )
-    if profile_value is not None:
-        return profile_value
-
-    shared_value = nested_get(payload, ("model", key))
-    if shared_value is not None:
-        return shared_value
-
-    return fallback
 
 
 def resolve_section_value(
@@ -286,21 +329,14 @@ def resolve_section_value(
     fallback: Any,
 ) -> Any:
     """Resolve a stage setting with an optional dataset-specific profile."""
-    if cli_value is not None:
-        return cli_value
-
-    dataset_name = normalize_dataset_name(dataset_name)
-    profile_value = nested_get(
-        payload, (section, "profiles", dataset_name, key)
+    return _resolve_scoped_value(
+        cli_value,
+        payload,
+        dataset_name=normalize_dataset_name(dataset_name),
+        scope=section,
+        key=key,
+        fallback=fallback,
     )
-    if profile_value is not None:
-        return profile_value
-
-    shared_value = nested_get(payload, (section, key))
-    if shared_value is not None:
-        return shared_value
-
-    return fallback
 
 
 def resolve_output_root(
