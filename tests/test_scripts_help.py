@@ -14,7 +14,6 @@ SCRIPTS = [
     "scripts/run_study.py",
     "helpers/benchmark_runtime.py",
     "helpers/probe_checkpoint.py",
-    "helpers/retrain_oracle.py",
     "scripts/prepare_data.py",
     "scripts/train_vlm.py",
     "scripts/run_unlearning.py",

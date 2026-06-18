@@ -2,19 +2,14 @@
 from __future__ import annotations
 
 import argparse
-import os
-import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-for path in (REPO_ROOT, REPO_ROOT / "src"):
-    if str(path) not in sys.path:
-        sys.path.insert(0, str(path))
-os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
-os.environ.setdefault("TRANSFORMERS_NO_FLAX", "1")
-os.environ.setdefault("USE_TF", "0")
-os.environ.setdefault("USE_FLAX", "0")
-os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+try:
+    from _bootstrap import REPO_ROOT, configure_runtime
+except ModuleNotFoundError:
+    from scripts._bootstrap import REPO_ROOT, configure_runtime
+
+configure_runtime()
 
 from unml.config import (
     load_runtime_config,
@@ -91,8 +86,6 @@ def parse_args() -> argparse.Namespace:
         "--no-train-logit-scale", dest="train_logit_scale", action="store_false"
     )
     parser.set_defaults(train_logit_scale=None)
-    # when this is called from run_pipeline.py, it isnt mentioned there, which causes its flag to be set as False, thats why we 'not' it below when setting the config.
-    # logit_scale is CLIP's learned temperature parameter (which is a sclar that controls how sharp the similarity distribution is b/w img and embedding. It acts as a softmax over class logits. In CLIP, the value is ~ln(100)=4.6. We train the logit_scale for both finetuning and unlearning. This essentially means that we give the model one more degree of freedom to adjust classification confidence. Freezing it would keep the output closer to CLIP behaviour. Im not sure if 'not freezing it' is the right call for the unlearning, because if one method shifts the logit_scale more than another, comparision becomes messy. This will have to be verified by freezing it during unlearning and see if MIA or forget quality change. If they dont, then the system is fine, but if they do then it becomes a temperature drift parameter to account for in adapter unlearning. The delta-based MIA is computed by (confidence_after_unlearning - confidence_base). If the logit_scale shifts during unlearning, the delta change reflects both unlearning and temperature change, which makes it harder to interpret which is genuine forgetting v/s the model changing its confidence due to temperature drift (temp drift as a confound in MIA eval for adapter-based unlearning).
 
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=None)

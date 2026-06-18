@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from scripts.benchmark_runtime import (
+from helpers.benchmark_runtime import (
     aggregate_records,
     build_train_command,
     read_record,

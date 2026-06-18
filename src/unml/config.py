@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -13,10 +14,18 @@ DEFAULT_FORGET_CLASSES = {
 }
 
 
+@dataclass(frozen=True)
+class ResolvedPaths:
+    output_root: Path
+    finetune_dir: Path
+    unlearning_dir: Path
+    comparison_dir: Path
+    oracle_dir: Path
+
+
 def load_runtime_config(path: str | None) -> dict[str, Any]:
-    ''' Returns the config/parameters.yaml safely as a dict/list payload '''
     if not path:
-        raise TypeError(f"Path object not passed correctly: {path}")
+        return {}
 
     cfg_path = Path(path)
     if not cfg_path.exists():
@@ -363,6 +372,27 @@ def resolve_output_root(
     rendered = str(raw_root).format(dataset=dataset_name)
     output_root = Path(rendered)
     return output_root / request_name if request_name else output_root
+
+
+def resolve_run_paths(
+    cli_output_root: str | None,
+    payload: dict[str, Any],
+    dataset_name: str,
+    cli_request: str | None = None,
+) -> ResolvedPaths:
+    output_root = resolve_output_root(
+        cli_output_root,
+        payload,
+        dataset_name,
+        cli_request,
+    )
+    return ResolvedPaths(
+        output_root=output_root,
+        finetune_dir=output_root / "finetune",
+        unlearning_dir=output_root / "unlearning",
+        comparison_dir=output_root / "comparison",
+        oracle_dir=output_root / "retrain_oracle",
+    )
 
 
 def resolve_data_dir(

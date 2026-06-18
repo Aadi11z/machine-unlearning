@@ -28,9 +28,8 @@ research hypothesis until the configured GPU experiments are complete.
 - `src/unml/probe.py`: sample- and class-level checkpoint inspection
 - `scripts/*.py`: main pipeline/study CLI entrypoints
 - `helpers/*.py`: support CLI entrypoints for cache, preflight, probing,
-  benchmarking, oracle convenience, and study summarization
+  benchmarking, and study summarization
 - `scripts/run_pipeline.py`: full experiment orchestration
-- `helpers/retrain_oracle.py`: retained-data retraining reference
 
 
 ## Tests
@@ -107,7 +106,7 @@ python scripts/run_pipeline.py
 Run only the oracle after a completed fine-tuning run:
 
 ```bash
-python helpers/retrain_oracle.py --offline --device cuda
+python scripts/train_vlm.py --oracle --offline --device cuda
 ```
 
 Oracle artifacts are isolated under `retrain_oracle/` and are automatically

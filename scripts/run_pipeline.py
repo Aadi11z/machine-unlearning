@@ -3,12 +3,15 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-for path in (REPO_ROOT, REPO_ROOT / "src"):
-    if str(path) not in sys.path:
-        sys.path.insert(0, str(path))
+try:
+    from _bootstrap import REPO_ROOT, configure_runtime
+except ModuleNotFoundError:
+    from scripts._bootstrap import REPO_ROOT, configure_runtime
+
+configure_runtime()
 
 from unml.config import (
     load_runtime_config,
@@ -17,13 +20,21 @@ from unml.config import (
     resolve_dataset_value,
     resolve_forget_classes,
     resolve_model_value,
-    resolve_output_root,
     resolve_request_name,
+    resolve_run_paths,
     resolve_section_str_list,
     resolve_section_value,
     resolve_value,
 )
 from unml.pipeline import run_pipeline_stage
+
+
+@dataclass(frozen=True)
+class StageSpec:
+    name: str
+    command: list[str]
+    inputs: list[str | Path]
+    outputs: list[str | Path]
 
 
 def parse_args() -> argparse.Namespace:
@@ -201,31 +212,26 @@ def main() -> None:
     seed = resolve_value(args.seed, runtime_cfg, ("experiment", "seed"), 42)
     device = resolve_value(args.device, runtime_cfg, ("experiment", "device"), "auto")
 
-    output_root = resolve_output_root(
+    paths = resolve_run_paths(
         args.output_root, runtime_cfg, dataset_name, args.request
     )
-    finetune_dir = output_root / "finetune"
-    unlearn_dir = output_root / "unlearning"
-    compare_dir = output_root / "comparison"
+    output_root = paths.output_root
+    finetune_dir = paths.finetune_dir
+    unlearn_dir = paths.unlearning_dir
+    compare_dir = paths.comparison_dir
     config_path = Path(args.config).resolve()
 
-    def run_stage(
-        stage: str,
-        command: list[str],
-        *,
-        inputs: list[str | Path],
-        outputs: list[str | Path],
-    ) -> None:
-        force = stage in args.force_stage or (
-            stage.startswith("unlearn:") and "unlearn" in args.force_stage
+    def run_stage(stage: StageSpec) -> None:
+        force = stage.name in args.force_stage or (
+            stage.name.startswith("unlearn:") and "unlearn" in args.force_stage
         )
         run_pipeline_stage(
-            stage=stage,
-            command=command,
+            stage=stage.name,
+            command=stage.command,
             env=env,
             output_root=output_root,
-            input_paths=[config_path, *inputs],
-            output_paths=outputs,
+            input_paths=[config_path, *stage.inputs],
+            output_paths=stage.outputs,
             resume=args.resume,
             force=force,
             repo_root=repo_root,
@@ -284,12 +290,7 @@ def main() -> None:
             "--seed",
             str(seed),
     ]
-    run_stage(
-        "prepare",
-        prepare_command,
-        inputs=[],
-        outputs=[split_path],
-    )
+    run_stage(StageSpec("prepare", prepare_command, [], [split_path]))
 
     # Training VLM command
     finetune_command = [
@@ -328,13 +329,15 @@ def main() -> None:
     base_ckpt = finetune_dir / "checkpoints" / "base_init.pt"
     finetune_metrics = finetune_dir / "metrics" / "finetune_metrics.json"
     run_stage(
-        "finetune",
-        finetune_command,
-        inputs=[split_path],
-        outputs=[base_ckpt, finetuned_ckpt, finetune_metrics],
+        StageSpec(
+            "finetune",
+            finetune_command,
+            [split_path],
+            [base_ckpt, finetuned_ckpt, finetune_metrics],
+        )
     )
 
-    oracle_dir = output_root / "retrain_oracle"
+    oracle_dir = paths.oracle_dir
     oracle_ckpt = oracle_dir / "checkpoints" / "retrained_best.pt"
     oracle_metrics = oracle_dir / "metrics" / "retrain_metrics.json"
 
@@ -372,10 +375,12 @@ def main() -> None:
                 device,
         ]
         run_stage(
-            "retrain_oracle",
-            oracle_command,
-            inputs=[split_path, base_ckpt, finetune_metrics],
-            outputs=[oracle_ckpt, oracle_metrics],
+            StageSpec(
+                "retrain_oracle",
+                oracle_command,
+                [split_path, base_ckpt, finetune_metrics],
+                [oracle_ckpt, oracle_metrics],
+            )
         )
 
     for method in methods:
@@ -425,10 +430,12 @@ def main() -> None:
                 device,
         ]
         run_stage(
-            f"unlearn:{method}",
-            unlearn_command,
-            inputs=[split_path, finetuned_ckpt],
-            outputs=unlearn_outputs,
+            StageSpec(
+                f"unlearn:{method}",
+                unlearn_command,
+                [split_path, finetuned_ckpt],
+                unlearn_outputs,
+            )
         )
 
     candidate_args = [
@@ -493,10 +500,12 @@ def main() -> None:
     if any(method in {"h_tgsd", "h_tgsd_no_sibling_preservation"} for method in methods):
         evaluation_outputs.append(compare_dir / "semantic_subspace.png")
     run_stage(
-        "evaluate",
-        evaluate_command,
-        inputs=evaluation_inputs,
-        outputs=evaluation_outputs,
+        StageSpec(
+            "evaluate",
+            evaluate_command,
+            evaluation_inputs,
+            evaluation_outputs,
+        )
     )
 
     print(f"[done] comparison markdown: {compare_dir / 'comparison.md'}")

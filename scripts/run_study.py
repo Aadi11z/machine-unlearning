@@ -9,10 +9,12 @@ from pathlib import Path
 
 import pandas as pd
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-for path in (REPO_ROOT, REPO_ROOT / "src"):
-    if str(path) not in sys.path:
-        sys.path.insert(0, str(path))
+try:
+    from _bootstrap import REPO_ROOT, configure_runtime
+except ModuleNotFoundError:
+    from scripts._bootstrap import REPO_ROOT, configure_runtime
+
+configure_runtime()
 
 from unml.config import load_runtime_config, resolve_str_list, resolve_value
 

@@ -10,10 +10,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.metrics import roc_auc_score
 from torch.utils.data import DataLoader
 from transformers import CLIPImageProcessor, CLIPTokenizer
 
+from .attack_metrics import _mia_metrics, _safe_auc
 from .data import (
     build_loaders,
     build_text_inputs,
@@ -25,8 +25,9 @@ from .evaluate import (
     collect_classification_outputs,
     summarize_classification_group,
 )
+from .grouped_eval import _group_classes
 from .model import load_checkpoint
-from helpers.tracker import update_unlearn_with_attacks
+from .tracker import update_unlearn_with_attacks
 from .utils import get_device
 
 
@@ -60,162 +61,6 @@ class EvaluationBasis:
     shared: np.ndarray
     request_type: str
     source_models: tuple[str, ...]
-
-
-def _safe_auc(y_true: np.ndarray, scores: np.ndarray) -> float:
-    unique = np.unique(y_true)
-    if unique.size < 2:
-        return 0.5
-    return float(roc_auc_score(y_true, scores))
-    # AUC = 0.5: no separability (random guessing).
-    # AUC > 0.5: attacker can distinguish members from non-members.
-    # AUC = 1.0: perfect separation.
-    # AUC < 0.5: reversed direction (if attacker flips the decision rule, it effectively becomes > 0.5).
-    # AUC is the probability that a random member gets a higher score than a random non-member.
-
-
-def _mia_resistance(auc: float) -> float:
-    return max(0.0, 1.0 - abs(auc - 0.5) * 2)
-
-
-def _mia_metrics(
-    member_current: np.ndarray,
-    nonmember_current: np.ndarray,
-    member_base: np.ndarray,
-    nonmember_base: np.ndarray,
-    *,
-    member_loss_current: np.ndarray | None = None,
-    nonmember_loss_current: np.ndarray | None = None,
-    member_loss_base: np.ndarray | None = None,
-    nonmember_loss_base: np.ndarray | None = None,
-) -> Dict[str, float]:
-    # Membership Inference Attack checks, given a sample and model's output score, whether that sample was in the model's training set(member) or not(non-member)
-    # It is a privacy leak, If members have higher confidence than non-members
-    # Basically answers, "Can confidence-based attacks tell which sample was in training?"
-    sample_count = min(
-        len(member_current),
-        len(nonmember_current),
-        len(member_base),
-        len(nonmember_base),
-    )
-    member_current = member_current[:sample_count]
-    nonmember_current = nonmember_current[:sample_count]
-    member_base = member_base[:sample_count]
-    nonmember_base = nonmember_base[:sample_count]
-
-    y = np.concatenate([np.ones(len(member_current)), np.zeros(len(nonmember_current))])
-    conf_scores = np.concatenate([member_current, nonmember_current])
-    delta_scores = np.concatenate([member_current - member_base, nonmember_current - nonmember_base])
-
-    auc_conf = _safe_auc(y, conf_scores) # checks if raw true-class confidence leaks membership info
-    auc_delta = _safe_auc(y, delta_scores) # checks if change relative to base model leaks membership
-
-    mia_resistance_conf = _mia_resistance(auc_conf)
-    mia_resistance_delta = _mia_resistance(auc_delta)
-    # If AUC = 0.5 -> resistance = 1.0 (best privacy)
-    # if AUC = 0 or 1 -> resistance = 0.0 (worst privacy)
-    
-    metrics = {
-        "mia_auc_confidence": auc_conf,
-        "mia_auc_delta": auc_delta,
-        "mia_resistance_confidence": mia_resistance_conf,
-        "mia_resistance_delta": mia_resistance_delta,
-    }
-    loss_inputs = (
-        member_loss_current,
-        nonmember_loss_current,
-        member_loss_base,
-        nonmember_loss_base,
-    )
-    if any(value is not None for value in loss_inputs):
-        if any(value is None for value in loss_inputs):
-            raise ValueError(
-                "Loss MIA requires current/base member and nonmember losses"
-            )
-        loss_lengths = {len(value) for value in loss_inputs if value is not None}
-        if len(loss_lengths) != 1 or loss_lengths != {sample_count}:
-            raise ValueError(
-                "Loss MIA arrays must have equal lengths matching confidence "
-                f"inputs ({sample_count}): {loss_lengths}"
-            )
-        member_loss_current = np.asarray(member_loss_current)
-        nonmember_loss_current = np.asarray(nonmember_loss_current)
-        member_loss_base = np.asarray(member_loss_base)
-        nonmember_loss_base = np.asarray(nonmember_loss_base)
-        loss_scores = np.concatenate(
-            [-member_loss_current, -nonmember_loss_current]
-        )
-        loss_delta_scores = np.concatenate(
-            [
-                member_loss_base - member_loss_current,
-                nonmember_loss_base - nonmember_loss_current,
-            ]
-        )
-        auc_loss = _safe_auc(y, loss_scores)
-        auc_loss_delta = _safe_auc(y, loss_delta_scores)
-        metrics.update(
-            {
-                "mia_auc_loss": auc_loss,
-                "mia_auc_loss_delta": auc_loss_delta,
-                "mia_resistance_loss": _mia_resistance(auc_loss),
-                "mia_resistance_loss_delta": _mia_resistance(
-                    auc_loss_delta
-                ),
-            }
-        )
-    return metrics
-
-
-def _group_classes(
-    split: Dict[str, Any], num_classes: int
-) -> Dict[str, list[int]]:
-    target = sorted(
-        set(split.get("target_classes", split.get("forget_classes", [])))
-    )
-    sibling = sorted(set(split.get("sibling_classes", [])))
-    unrelated = sorted(set(split.get("unrelated_classes", [])))
-    if not unrelated:
-        unrelated = sorted(set(range(num_classes)) - set(target) - set(sibling))
-    if not target:
-        raise ValueError("Evaluation requires at least one target class")
-    named_groups = {
-        "target": set(target),
-        "sibling": set(sibling),
-        "unrelated": set(unrelated),
-    }
-    for group_name, class_ids in named_groups.items():
-        invalid = sorted(
-            class_id
-            for class_id in class_ids
-            if class_id < 0 or class_id >= num_classes
-        )
-        if invalid:
-            raise ValueError(
-                f"{group_name} classes outside [0, {num_classes - 1}]: "
-                f"{invalid}"
-            )
-    for left, right in (
-        ("target", "sibling"),
-        ("target", "unrelated"),
-        ("sibling", "unrelated"),
-    ):
-        overlap = sorted(named_groups[left] & named_groups[right])
-        if overlap:
-            raise ValueError(
-                f"Evaluation class groups {left}/{right} overlap: {overlap}"
-            )
-    missing = sorted(set(range(num_classes)) - set().union(*named_groups.values()))
-    if missing:
-        raise ValueError(
-            f"Evaluation class groups do not cover classes: {missing}"
-        )
-    return {
-        "target": target,
-        "sibling": sibling,
-        "unrelated": unrelated,
-        "retain": sorted(set(sibling) | set(unrelated)),
-        "all": list(range(num_classes)),
-    }
 
 
 def _validate_candidates(
