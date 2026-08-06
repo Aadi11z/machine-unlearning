@@ -236,6 +236,24 @@ Markdown, and optional source images under the request-specific `probes/`
 directory. This is a per-example diagnostic; paper claims still require the
 aggregate evaluation metrics above.
 
+## Local Checkpoint Interface
+
+The local probe interface compares the configured CIFAR-100 `rose_selective`
+baseline with a registered unlearned checkpoint on an uploaded or pasted image.
+It keeps all 100 CIFAR-100 labels eligible for prediction and shows raw top-5
+rankings plus the `rose` probability change. Uploaded images are exploratory
+out-of-distribution probes, not a replacement for the recorded evaluation.
+
+```bash
+uv sync --all-groups
+uv run scripts/probe_ui.py --offline --device auto
+```
+
+The interface binds only to `127.0.0.1`; it does not enable public Gradio
+sharing, accept URLs or checkpoint paths from the browser, write model files,
+or submit training jobs. The startup-only checkpoint registry is in
+`config/parameters.yaml` under `probe_ui`.
+
 ## Notes
 - CIFAR-10 backbone: `openai/clip-vit-base-patch32` (frozen).
 - CIFAR-100 backbone: `openai/clip-vit-base-patch16` with vision-only LoRA.

@@ -41,6 +41,21 @@ class DummyTokenizer:
         }
 
 
+class ImageProcessor:
+    def __call__(self, images, **_kwargs):
+        assert images.mode == "RGB"
+        return {"pixel_values": torch.zeros((1, 3, 4, 4))}
+
+
+class ImageModel:
+    cfg = SimpleNamespace(precision="fp32")
+
+    def class_logits_from_text_features(self, pixel_values, class_text_features):
+        assert pixel_values.shape == (1, 3, 4, 4)
+        assert class_text_features.shape == (3, 2)
+        return torch.tensor([[0.2, 3.0, 1.0]])
+
+
 def test_resolve_probe_classes_supports_names_and_target_default() -> None:
     names = ["orchid", "rose", "tulip"]
 
@@ -82,6 +97,29 @@ def test_default_train_probe_uses_exact_forget_indices() -> None:
         dataset=TinyDataset(),
         limit_per_class=1,
     ) == []
+
+
+def test_predict_probe_image_returns_target_rank_without_true_label() -> None:
+    predictor = probe.ImageCheckpointPredictor(
+        model=ImageModel(),
+        metadata={},
+        class_names=("orchid", "rose", "tulip"),
+        image_processor=ImageProcessor(),
+        class_text_features=torch.zeros((3, 2)),
+        device=torch.device("cpu"),
+    )
+
+    result = probe.predict_probe_image(
+        predictor,
+        Image.new("RGBA", (4, 4), color=(0, 0, 0, 0)),
+        target_class_name="rose",
+        top_k=2,
+    )
+
+    assert result["target_class_id"] == 1
+    assert result["target_rank"] == 1
+    assert result["top_k"][0]["class_name"] == "rose"
+    assert len(result["top_k"]) == 2
 
 
 def test_run_checkpoint_probe_writes_comparison_and_images(

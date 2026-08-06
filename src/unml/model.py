@@ -182,11 +182,24 @@ class LightweightVLM(nn.Module):
         self.logit_scale.requires_grad = cfg.train_logit_scale
 
         if cfg.gradient_checkpointing:
-            self.clip.vision_model.gradient_checkpointing_enable()
+            self.clip.gradient_checkpointing_enable()
+            # Checkpointed layers need a differentiable input even though the
+            # pretrained vision embeddings themselves remain frozen.
+            self.clip.vision_model.embeddings.register_forward_hook(
+                self._require_vision_embedding_gradients
+            )
 
     @classmethod
     def from_config(cls, cfg: ModelConfig) -> "LightweightVLM":
         return cls(cfg)
+
+    @staticmethod
+    def _require_vision_embedding_gradients(
+        _module: nn.Module,
+        _inputs: tuple[torch.Tensor, ...],
+        output: torch.Tensor,
+    ) -> torch.Tensor:
+        return output.requires_grad_(True)
 
     def _inject_vision_lora(self) -> None:
         layers = self.clip.vision_model.encoder.layers
@@ -260,10 +273,7 @@ class LightweightVLM(nn.Module):
         self, pixel_values: torch.Tensor, return_patch_tokens: bool = False
     ) -> torch.Tensor | Tuple[torch.Tensor, torch.Tensor]:
         if return_patch_tokens:
-            vision_output = self.clip.vision_model(
-                pixel_values=pixel_values,
-                return_dict=True,
-            )
+            vision_output = self.clip.vision_model(pixel_values=pixel_values)
             pooled = vision_output.pooler_output
             projected = self.clip.visual_projection(pooled)
             image_features = F.normalize(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -20,6 +21,138 @@ from .data import (
 from .evaluate import build_class_text_features
 from .model import load_checkpoint, precision_context
 from .utils import ensure_dir, get_device, transformers_offline
+
+
+@dataclass
+class ImageCheckpointPredictor:
+    """A loaded checkpoint and its fixed CIFAR class prompt features."""
+
+    model: torch.nn.Module
+    metadata: Mapping[str, Any]
+    class_names: Sequence[str]
+    image_processor: CLIPImageProcessor
+    class_text_features: torch.Tensor
+    device: torch.device
+
+
+def _class_name_to_id(class_names: Sequence[str], class_name: str) -> int:
+    normalized = class_name.strip().lower().replace("_", " ")
+    matches = {
+        name.strip().lower().replace("_", " "): index
+        for index, name in enumerate(class_names)
+    }
+    if normalized not in matches:
+        raise ValueError(f"Unknown class name={class_name!r}")
+    return matches[normalized]
+
+
+@torch.no_grad()
+def _probabilities_from_pixels(
+    model: torch.nn.Module,
+    pixel_values: torch.Tensor,
+    class_text_features: torch.Tensor,
+    device: torch.device,
+) -> torch.Tensor:
+    with precision_context(model.cfg.precision, device):
+        logits = model.class_logits_from_text_features(
+            pixel_values=pixel_values.to(device),
+            class_text_features=class_text_features,
+        )
+    return logits.float().softmax(dim=-1)
+
+
+def load_image_checkpoint_predictor(
+    *,
+    checkpoint_path: str,
+    dataset_name: str,
+    class_names: Sequence[str],
+    prompt_template: str,
+    device_name: str,
+    expected_model_name: str | None = None,
+    local_files_only: bool = False,
+) -> ImageCheckpointPredictor:
+    """Load one immutable checkpoint for label-free image probing."""
+    device = get_device(device_name)
+    model, metadata = load_checkpoint(checkpoint_path, map_location=device)
+    validate_checkpoint_dataset(metadata, dataset_name, checkpoint_path)
+    if expected_model_name is not None and model.cfg.model_name != expected_model_name:
+        raise ValueError(
+            f"Checkpoint {checkpoint_path} uses {model.cfg.model_name}, "
+            f"expected {expected_model_name}"
+        )
+
+    model = model.to(device).eval()
+    model_name = model.cfg.model_name
+    image_processor = CLIPImageProcessor.from_pretrained(
+        model_name,
+        local_files_only=local_files_only or transformers_offline(),
+    )
+    tokenizer = CLIPTokenizer.from_pretrained(
+        model_name,
+        local_files_only=local_files_only or transformers_offline(),
+    )
+    class_text_inputs = build_text_inputs(
+        tokenizer,
+        class_names=class_names,
+        template=prompt_template,
+    )
+    text_inputs = {key: value.to(device) for key, value in class_text_inputs.items()}
+    class_text_features = build_class_text_features(model, text_inputs, device)
+    return ImageCheckpointPredictor(
+        model=model,
+        metadata=metadata,
+        class_names=tuple(class_names),
+        image_processor=image_processor,
+        class_text_features=class_text_features,
+        device=device,
+    )
+
+
+@torch.no_grad()
+def predict_probe_image(
+    predictor: ImageCheckpointPredictor,
+    image: Any,
+    *,
+    target_class_name: str,
+    top_k: int,
+) -> dict[str, Any]:
+    """Return CIFAR class rankings for an image without assuming a true label."""
+    if top_k < 1:
+        raise ValueError("top_k must be at least 1")
+    if not hasattr(image, "convert"):
+        raise ValueError("Probe image must be a decoded image object")
+
+    image = image.convert("RGB")
+    inputs = predictor.image_processor(images=image, return_tensors="pt")
+    probabilities = _probabilities_from_pixels(
+        predictor.model,
+        inputs["pixel_values"],
+        predictor.class_text_features,
+        predictor.device,
+    )[0]
+    count = min(top_k, len(predictor.class_names))
+    values, class_ids = probabilities.topk(count)
+    target_class_id = _class_name_to_id(predictor.class_names, target_class_name)
+    target_probability = float(probabilities[target_class_id].item())
+    target_rank = int((probabilities > target_probability).sum().item()) + 1
+
+    return {
+        "top_k": [
+            {
+                "rank": rank,
+                "class_id": int(class_id.item()),
+                "class_name": predictor.class_names[int(class_id.item())],
+                "probability": float(value.item()),
+            }
+            for rank, (value, class_id) in enumerate(
+                zip(values.detach().cpu(), class_ids.detach().cpu()), start=1
+            )
+        ],
+        "target_class_id": target_class_id,
+        "target_class_name": predictor.class_names[target_class_id],
+        "target_probability": target_probability,
+        "target_rank": target_rank,
+    }
 
 
 def resolve_probe_classes(
@@ -171,13 +304,12 @@ def _predict_checkpoint(
         key: value.to(device) for key, value in class_text_inputs.items()
     }
     text_features = build_class_text_features(model, text_inputs, device)
-    pixel_values = batch["pixel_values"].to(device)
-    with precision_context(model.cfg.precision, device):
-        logits = model.class_logits_from_text_features(
-            pixel_values=pixel_values,
-            class_text_features=text_features,
-        )
-    probabilities = logits.float().softmax(dim=-1)
+    probabilities = _probabilities_from_pixels(
+        model,
+        batch["pixel_values"],
+        text_features,
+        device,
+    )
     labels = batch["labels"].to(device)
     true_confidences = probabilities.gather(
         1, labels.unsqueeze(1)
