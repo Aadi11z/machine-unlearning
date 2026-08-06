@@ -4,7 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from unml.probe_ui import _model_load_error_message, load_probe_ui_settings
+import pandas as pd
+
+from unml.probe_ui import (
+    _model_load_error_message,
+    _result_html,
+    load_probe_ui_settings,
+)
 
 
 def test_probe_ui_settings_resolve_only_relative_checkpoint_paths(tmp_path: Path) -> None:
@@ -94,3 +100,35 @@ def test_offline_model_load_error_explains_how_to_cache_clip() -> None:
 
     assert "cache_model.py --dataset cifar100" in message
     assert "--offline" in message
+
+
+def test_result_html_separates_probe_from_saved_evaluation() -> None:
+    result = _result_html(
+        target_class_name="rose",
+        candidate_name="H-TGSD",
+        baseline_prediction={
+            "target_probability": 0.9997,
+            "target_rank": 1,
+            "top_k": [{"class_name": "rose", "probability": 0.9997}],
+        },
+        candidate_prediction={
+            "target_probability": 0.0086,
+            "target_rank": 77,
+            "top_k": [{"class_name": "cloud", "probability": 0.0151}],
+        },
+        metrics=pd.Series(
+            {
+                "target_test_acc": 0.11,
+                "sibling_test_acc": 0.9175,
+                "utility_test_all": 0.8557,
+                "mia_resistance_confidence": 0.7038,
+                "mia_auc_confidence": 0.3519,
+            }
+        ),
+    )
+
+    assert "Target suppression observed" in result
+    assert "rank 1 to 77" in result
+    assert "11.0%" in result
+    assert "70.4%" in result
+    assert "illustrative external probe" in result

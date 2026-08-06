@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import html
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +28,55 @@ _METRIC_COLUMNS = (
     ("mia_auc_confidence", "Confidence MIA AUC"),
     ("mia_auc_loss", "Loss MIA AUC"),
 )
+
+_APP_CSS = """
+.gradio-container {
+  max-width: 1240px !important;
+  margin: 0 auto !important;
+  padding: 28px 24px 48px !important;
+}
+.probe-header {
+  border-left: 4px solid #f97316;
+  padding: 4px 0 4px 18px;
+  margin: 8px 0 20px;
+}
+.probe-header h1 { margin: 0; font-size: 28px; }
+.probe-header p { margin: 7px 0 0; color: var(--body-text-color-subdued); }
+.probe-controls { align-items: stretch; }
+.probe-controls > div { min-width: 0; }
+.result-panel {
+  border: 1px solid var(--border-color-primary);
+  border-radius: 8px;
+  padding: 20px;
+  margin: 22px 0 12px;
+  background: var(--block-background-fill);
+}
+.result-title { margin: 0 0 6px; font-size: 20px; }
+.result-copy { margin: 0; color: var(--body-text-color-subdued); }
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+  margin-top: 18px;
+}
+.metric-card {
+  border: 1px solid var(--border-color-primary);
+  border-radius: 6px;
+  padding: 12px;
+  min-height: 92px;
+}
+.metric-label { color: var(--body-text-color-subdued); font-size: 12px; }
+.metric-value { font-size: 25px; font-weight: 650; line-height: 1.25; margin-top: 4px; }
+.metric-note { color: var(--body-text-color-subdued); font-size: 12px; margin-top: 5px; }
+.probe-note { margin: 16px 0 0; color: var(--body-text-color-subdued); font-size: 13px; }
+@media (max-width: 900px) {
+  .metric-grid { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+}
+@media (max-width: 560px) {
+  .gradio-container { padding: 20px 14px 36px !important; }
+  .metric-grid { grid-template-columns: 1fr; }
+}
+"""
 
 
 @dataclass(frozen=True)
@@ -175,6 +225,102 @@ def _top_k_frame(prediction: Mapping[str, Any]) -> pd.DataFrame:
     )
 
 
+def _metric_value(row: pd.Series, key: str) -> float | None:
+    value = row.get(key)
+    if value is None or pd.isna(value):
+        return None
+    return float(value)
+
+
+def _metric_card(label: str, value: str, note: str) -> str:
+    return (
+        '<div class="metric-card">'
+        f'<div class="metric-label">{html.escape(label)}</div>'
+        f'<div class="metric-value">{html.escape(value)}</div>'
+        f'<div class="metric-note">{html.escape(note)}</div>'
+        "</div>"
+    )
+
+
+def _result_html(
+    *,
+    target_class_name: str,
+    candidate_name: str,
+    baseline_prediction: Mapping[str, Any],
+    candidate_prediction: Mapping[str, Any],
+    metrics: pd.Series,
+) -> str:
+    baseline_probability = float(baseline_prediction["target_probability"])
+    candidate_probability = float(candidate_prediction["target_probability"])
+    probability_delta = candidate_probability - baseline_probability
+    target_suppressed = candidate_probability < baseline_probability
+    verdict = (
+        "Target suppression observed"
+        if target_suppressed
+        else "Target suppression was not observed"
+    )
+    candidate_top = candidate_prediction["top_k"][0]
+
+    target_accuracy = _metric_value(metrics, "target_test_acc")
+    sibling_accuracy = _metric_value(metrics, "sibling_test_acc")
+    utility_accuracy = _metric_value(metrics, "utility_test_all")
+    mia_resistance = _metric_value(metrics, "mia_resistance_confidence")
+    mia_auc = _metric_value(metrics, "mia_auc_confidence")
+    cards = [
+        _metric_card(
+            "Uploaded-image target score",
+            f"{candidate_probability:.2%}",
+            f"{baseline_probability:.2%} baseline; {probability_delta:+.2%} change",
+        ),
+        _metric_card(
+            "Target test accuracy",
+            f"{target_accuracy:.1%}" if target_accuracy is not None else "N/A",
+            "Saved CIFAR-100 evaluation; lower is better",
+        ),
+        _metric_card(
+            "Sibling test accuracy",
+            f"{sibling_accuracy:.1%}" if sibling_accuracy is not None else "N/A",
+            "Saved CIFAR-100 evaluation; higher is better",
+        ),
+        _metric_card(
+            "Overall test accuracy",
+            f"{utility_accuracy:.1%}" if utility_accuracy is not None else "N/A",
+            "Saved CIFAR-100 evaluation; higher is better",
+        ),
+    ]
+    privacy_note = (
+        f"Resistance is highest at 100%; raw confidence AUC is {mia_auc:.3f}."
+        if mia_auc is not None
+        else "Resistance is highest at 100%."
+    )
+    if mia_resistance is not None:
+        cards.append(
+            _metric_card(
+                "Confidence MIA resistance",
+                f"{mia_resistance:.1%}",
+                privacy_note,
+            )
+        )
+
+    return (
+        '<section class="result-panel">'
+        f'<h2 class="result-title">{html.escape(verdict)}</h2>'
+        '<p class="result-copy">'
+        f'<strong>{html.escape(target_class_name)}</strong> moved from rank '
+        f'{int(baseline_prediction["target_rank"])} to '
+        f'{int(candidate_prediction["target_rank"])} under '
+        f'<strong>{html.escape(candidate_name)}</strong>. The candidate top label is '
+        f'<strong>{html.escape(str(candidate_top["class_name"]))}</strong> '
+        f'({float(candidate_top["probability"]):.2%}).'
+        "</p>"
+        f'<div class="metric-grid">{"".join(cards)}</div>'
+        '<p class="probe-note">This uploaded image is an illustrative external '
+        'probe without a CIFAR-100 ground-truth label. The saved test metrics '
+        'are the evidence for the experiment-level claim.</p>'
+        "</section>"
+    )
+
+
 def _model_load_error_message(error: OSError, *, offline: bool) -> str:
     if offline:
         return (
@@ -265,7 +411,7 @@ class ProbeComparisonService:
             self._candidate_name = candidate.name
         return self._candidate
 
-    def _metric_frame(self, candidate: RegisteredCheckpoint) -> pd.DataFrame:
+    def _metric_row(self, candidate: RegisteredCheckpoint) -> pd.Series:
         rows = self._comparison[
             self._comparison["model"] == candidate.comparison_model
         ]
@@ -273,7 +419,10 @@ class ProbeComparisonService:
             raise ValueError(
                 f"Comparison report has no row for {candidate.comparison_model!r}"
             )
-        row = rows.iloc[0]
+        return rows.iloc[0]
+
+    def _metric_frame(self, candidate: RegisteredCheckpoint) -> pd.DataFrame:
+        row = self._metric_row(candidate)
         return pd.DataFrame(
             [
                 {"Metric": label, "Value": f"{float(row[key]):.4f}"}
@@ -303,23 +452,15 @@ class ProbeComparisonService:
                 top_k=self.settings.top_k,
             )
 
-        delta = (
-            candidate_prediction["target_probability"]
-            - baseline_prediction["target_probability"]
-        )
-        summary = (
-            f"### Target class: `{self.settings.target_class_name}`\n\n"
-            f"Baseline: rank **{baseline_prediction['target_rank']}**, probability "
-            f"**{baseline_prediction['target_probability']:.4f}**  \n"
-            f"{candidate_registration.name}: rank "
-            f"**{candidate_prediction['target_rank']}**, probability "
-            f"**{candidate_prediction['target_probability']:.4f}**  \n"
-            f"Candidate minus baseline probability: **{delta:+.4f}**\n\n"
-            "External uploads are out-of-distribution probes; they do not have a "
-            "CIFAR-100 ground-truth label."
-        )
+        metric_row = self._metric_row(candidate_registration)
         return (
-            summary,
+            _result_html(
+                target_class_name=self.settings.target_class_name,
+                candidate_name=candidate_registration.name,
+                baseline_prediction=baseline_prediction,
+                candidate_prediction=candidate_prediction,
+                metrics=metric_row,
+            ),
             _top_k_frame(baseline_prediction),
             _top_k_frame(candidate_prediction),
             self._metric_frame(candidate_registration),
@@ -356,45 +497,62 @@ def create_probe_app(
             raise gr.Error(str(error)) from error
 
     candidate_names = [candidate.name for candidate in settings.candidates]
-    with gr.Blocks(title="UN-ML Checkpoint Probe") as app:
-        gr.Markdown(
-            "# UN-ML Checkpoint Probe\n"
-            "Compare the fine-tuned CIFAR-100 baseline with a registered "
-            "unlearned checkpoint. Images are scored against all 100 CIFAR-100 labels."
+    with gr.Blocks(title="UN-ML Checkpoint Probe", css=_APP_CSS) as app:
+        gr.HTML(
+            "<header class='probe-header'>"
+            "<h1>UN-ML Checkpoint Probe</h1>"
+            "<p>CIFAR-100 selective unlearning: baseline versus a registered "
+            "candidate checkpoint.</p>"
+            "</header>"
         )
-        with gr.Row():
+        with gr.Row(elem_classes=["probe-controls"]):
             image_input = gr.Image(
                 label="Upload or paste an image",
                 type="pil",
                 image_mode="RGB",
                 sources=["upload", "clipboard"],
+                height=360,
+                scale=3,
             )
-            candidate_input = gr.Dropdown(
-                choices=candidate_names,
-                value=candidate_names[0],
-                label="Unlearned checkpoint",
-            )
-        compare_button = gr.Button("Compare checkpoints", variant="primary")
-        summary = gr.Markdown()
-        with gr.Row():
-            baseline_table = gr.Dataframe(
-                headers=["Rank", "Class", "Probability"],
-                label=settings.baseline.name,
+            with gr.Column(scale=2, min_width=320):
+                candidate_input = gr.Dropdown(
+                    choices=candidate_names,
+                    value=candidate_names[0],
+                    label="Unlearned checkpoint",
+                )
+                gr.Markdown(
+                    f"**Experiment:** `{settings.dataset_name}` / "
+                    f"`{settings.request_name}`\n\n"
+                    f"**Target class:** `{settings.target_class_name}`"
+                )
+                compare_button = gr.Button(
+                    "Compare checkpoints", variant="primary", size="lg"
+                )
+        result = gr.HTML()
+        with gr.Accordion("Prediction details", open=False):
+            with gr.Row():
+                baseline_table = gr.Dataframe(
+                    headers=["Rank", "Class", "Probability"],
+                    label=settings.baseline.name,
+                    interactive=False,
+                    max_height=250,
+                )
+                candidate_table = gr.Dataframe(
+                    headers=["Rank", "Class", "Probability"],
+                    label="Selected unlearned checkpoint",
+                    interactive=False,
+                    max_height=250,
+                )
+        with gr.Accordion("Saved aggregate evaluation metrics", open=False):
+            metrics_table = gr.Dataframe(
+                headers=["Metric", "Value"],
+                label="Candidate evaluation record",
                 interactive=False,
+                max_height=280,
             )
-            candidate_table = gr.Dataframe(
-                headers=["Rank", "Class", "Probability"],
-                label="Selected unlearned checkpoint",
-                interactive=False,
-            )
-        metrics_table = gr.Dataframe(
-            headers=["Metric", "Value"],
-            label="Saved aggregate evaluation metrics",
-            interactive=False,
-        )
         compare_button.click(
             compare_callback,
             inputs=[image_input, candidate_input],
-            outputs=[summary, baseline_table, candidate_table, metrics_table],
+            outputs=[result, baseline_table, candidate_table, metrics_table],
         )
     return app
