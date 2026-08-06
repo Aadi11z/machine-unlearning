@@ -175,6 +175,16 @@ def _top_k_frame(prediction: Mapping[str, Any]) -> pd.DataFrame:
     )
 
 
+def _model_load_error_message(error: OSError, *, offline: bool) -> str:
+    if offline:
+        return (
+            "The frozen CLIP base model is not available in the local cache. "
+            "Run `uv run helpers/cache_model.py --dataset cifar100` once while "
+            "online, then restart this interface with `--offline`."
+        )
+    return f"Unable to load the frozen CLIP base model: {error}"
+
+
 class ProbeComparisonService:
     """Compare one immutable baseline with one selected immutable candidate."""
 
@@ -338,6 +348,10 @@ def create_probe_app(
     def compare_callback(image: Any, candidate_name: str):
         try:
             return service.compare(image, candidate_name)
+        except OSError as error:
+            raise gr.Error(
+                _model_load_error_message(error, offline=local_files_only)
+            ) from error
         except (FileNotFoundError, RuntimeError, ValueError) as error:
             raise gr.Error(str(error)) from error
 

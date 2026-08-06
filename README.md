@@ -246,6 +246,7 @@ out-of-distribution probes, not a replacement for the recorded evaluation.
 
 ```bash
 uv sync --all-groups
+uv run helpers/cache_model.py --dataset cifar100
 uv run scripts/probe_ui.py --offline --device auto
 ```
 

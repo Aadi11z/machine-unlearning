@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from unml.probe_ui import load_probe_ui_settings
+from unml.probe_ui import _model_load_error_message, load_probe_ui_settings
 
 
 def test_probe_ui_settings_resolve_only_relative_checkpoint_paths(tmp_path: Path) -> None:
@@ -87,3 +87,10 @@ probe_ui:
 
     with pytest.raises(ValueError, match="non-empty relative path"):
         load_probe_ui_settings(str(config_path))
+
+
+def test_offline_model_load_error_explains_how_to_cache_clip() -> None:
+    message = _model_load_error_message(OSError("cache miss"), offline=True)
+
+    assert "cache_model.py --dataset cifar100" in message
+    assert "--offline" in message
