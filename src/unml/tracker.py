@@ -6,6 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Sequence
 
+_TRACKER_PATH = Path("research") / "experiments" / "FINETUNE_TRACKER.md"
+
 
 def _project_root() -> Path:
     path = Path(__file__).resolve().parent
@@ -25,6 +27,7 @@ def _fmt(value: Any, precision: int = 4) -> str:
 def _ensure_header(path: Path, title: str, columns: Sequence[str]) -> None:
     if path.exists() and path.stat().st_size > 0:
         return
+    path.parent.mkdir(parents=True, exist_ok=True)
     header_row = "| " + " | ".join(columns) + " |"
     sep_row = "| " + " | ".join("---" for _ in columns) + " |"
     path.write_text(
@@ -65,7 +68,7 @@ def log_finetune_epoch(
     train_loss: float,
     eval_metrics: Dict[str, float],
 ) -> None:
-    path = _project_root() / "FINETUNE_TRACKER.md"
+    path = _project_root() / _TRACKER_PATH
     _ensure_header(path, "Finetuning Experiment Tracker", _FT_COLUMNS)
     _append_row(
         path,
@@ -93,7 +96,7 @@ def log_finetune_summary(
     best_retain_val_acc: float,
     total_epochs: int,
 ) -> None:
-    path = _project_root() / "FINETUNE_TRACKER.md"
+    path = _project_root() / _TRACKER_PATH
     if not path.exists():
         return
     with path.open("a", encoding="utf-8") as handle:
