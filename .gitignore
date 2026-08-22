@@ -1,0 +1,29 @@
+__pycache__/
+*.pyc
+.venv/
+.claude/
+.env
+.DS_Store
+.pytest_cache
+.vscode
+
+# Experiment artifacts
+data/
+outputs/
+
+# Packaging
+*.egg-info/
+build/
+dist/
+
+# Explanations
+docs/
+research/
+
+# Tracker Files (experimentation)
+FINETUNE_TRACKER.md
+UNLEARN_EVAL_TRACKER.md
+
+# Shell Files for HPC-BITSHyd Cluster
+sharanga_activation.sh
+src/hpc/
