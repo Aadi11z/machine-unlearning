@@ -156,29 +156,6 @@ probe:
   top_k: 5
   save_images: true
 
-probe_ui:
-  # This registry is read only at application startup. Browser users can choose
-  # only from the listed candidates and cannot provide checkpoint paths.
-  dataset: cifar100
-  request: rose_selective
-  target_class: rose
-  top_k: 5
-  comparison: eval_compare_h_tgsd_ablation_ga_kl_200/comparison.csv
-  baseline:
-    name: Fine-tuned baseline
-    checkpoint: baseline_2000/checkpoints/finetuned_best.pt
-    comparison_model: finetuned
-  candidates:
-    - name: H-TGSD
-      checkpoint: unlearn_h_tgsd_200/checkpoints/unlearn_h_tgsd.pt
-      comparison_model: h_tgsd
-    - name: H-TGSD without sibling preservation
-      checkpoint: unlearn_h_tgsd_no_sibling_200/checkpoints/unlearn_h_tgsd_no_sibling_preservation.pt
-      comparison_model: h_tgsd_no_sibling
-    - name: GA+KL
-      checkpoint: unlearn_ga_kl_200/checkpoints/unlearn_ga_kl.pt
-      comparison_model: ga_kl
-
 study:
   dataset: cifar100
   requests:
