@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Dict, Iterable, Sequence, Tuple
+from typing import Any, Dict, Iterable, Mapping, Sequence, Tuple
 
 import torch
 import torch.nn as nn
@@ -368,10 +368,196 @@ def update_checkpoint_extra(path: str, updates: Dict) -> None:
     torch.save(payload, path)
 
 
+def read_checkpoint_payload(
+    path: str, map_location: str | torch.device = "cpu"
+) -> Dict:
+    if str(path).endswith(".safetensors"):
+        return _read_safetensors_payload(path)
+    return torch.load(path, map_location=map_location, weights_only=False)
+
+
+_SAFETENSORS_FORMAT_KEY = "format"
+_SAFETENSORS_CONFIG_KEY = "model_config"
+_SAFETENSORS_SCALARS_KEY = "scalar_keys"
+
+
+def export_checkpoint_safetensors(payload: Dict) -> bytes:
+    """Serialize a checkpoint payload without pickle execution risk."""
+    import io
+    import json
+
+    from safetensors.torch import save
+
+    state = payload["adapter_state_dict"]
+    tensors = {}
+    scalar_keys = []
+    for key, value in state.items():
+        if value.dim() == 0:
+            scalar_keys.append(key)
+            tensors[key] = value.detach().cpu().clone().reshape(1)
+        else:
+            tensors[key] = value.detach().cpu().contiguous()
+    metadata = {
+        _SAFETENSORS_FORMAT_KEY: "unml-adapter-v1",
+        _SAFETENSORS_CONFIG_KEY: json.dumps(payload["model_config"]),
+        _SAFETENSORS_SCALARS_KEY: json.dumps(scalar_keys),
+    }
+    return save(tensors, metadata=metadata)
+
+
+def read_safetensors_metadata(data: bytes) -> Dict[str, str]:
+    """Read the __metadata__ mapping from safetensors bytes without loading tensors."""
+    import json
+    import struct
+
+    if len(data) < 8:
+        raise ValueError("Safetensors payload is truncated")
+    (header_length,) = struct.unpack("<Q", data[:8])
+    header = json.loads(data[8 : 8 + header_length])
+    metadata = header.get("__metadata__", {})
+    return {str(key): str(value) for key, value in metadata.items()}
+
+
+def _read_safetensors_payload(path: str) -> Dict:
+    import json
+
+    from safetensors import safe_open
+    from safetensors.torch import load_file
+
+    tensors = load_file(path)
+    with safe_open(path, framework="pt") as handle:
+        metadata = handle.metadata() or {}
+    if metadata.get(_SAFETENSORS_FORMAT_KEY) != "unml-adapter-v1":
+        raise ValueError(f"Checkpoint {path!r} is not a unml adapter safetensors file")
+    scalar_keys = set(json.loads(metadata.get(_SAFETENSORS_SCALARS_KEY, "[]")))
+    state = {
+        key: (
+            value.reshape(())
+            if key in scalar_keys
+            else value
+        )
+        for key, value in tensors.items()
+    }
+    return {
+        "model_config": json.loads(metadata[_SAFETENSORS_CONFIG_KEY]),
+        "adapter_state_dict": state,
+    }
+
+
+_NON_STRUCTURAL_CONFIG_FIELDS = frozenset(
+    {"train_logit_scale", "gradient_checkpointing", "local_files_only"}
+)
+
+
+def _json_comparable(value: Any) -> Any:
+    """Normalize values so tuple/list storage differences do not matter."""
+    import json
+
+    return json.loads(json.dumps(value))
+
+
+def validate_adapter_payload(
+    payload: Dict,
+    reference_cfg: ModelConfig,
+    *,
+    source: str = "checkpoint",
+    expected_model_name: str | None = None,
+) -> None:
+    """Validate a delta-only checkpoint against the loaded reference model."""
+    cfg_payload = payload.get("model_config")
+    if not isinstance(cfg_payload, Mapping):
+        raise ValueError(f"Checkpoint {source!r} is missing model_config")
+    adapter_state = payload.get("adapter_state_dict")
+    if not isinstance(adapter_state, Mapping) or not adapter_state:
+        raise ValueError(f"Checkpoint {source!r} contains no adapter weights")
+
+    stored_model_name = str(cfg_payload.get("model_name", ""))
+    if (
+        expected_model_name is not None
+        and stored_model_name != expected_model_name
+    ):
+        raise ValueError(
+            f"Checkpoint {source!r} uses {stored_model_name}, "
+            f"expected {expected_model_name}"
+        )
+
+    reference = {
+        field: _json_comparable(value)
+        for field, value in asdict(reference_cfg).items()
+    }
+    mismatches = []
+    missing = []
+    for field, value in reference.items():
+        if field in _NON_STRUCTURAL_CONFIG_FIELDS:
+            continue
+        if field not in cfg_payload:
+            missing.append(field)
+        elif _json_comparable(cfg_payload[field]) != value:
+            mismatches.append(
+                f"{field}: stored={cfg_payload[field]!r} != active={value!r}"
+            )
+    if missing:
+        raise ValueError(
+            f"Checkpoint {source!r} configuration lacks fields: {missing}"
+        )
+    if mismatches:
+        raise ValueError(
+            f"Checkpoint {source!r} architecture differs from the active model: "
+            + "; ".join(mismatches)
+        )
+
+
+def apply_adapter_state(model: LightweightVLM, adapter_state: Mapping[str, Any]) -> None:
+    """Copy trainable adapter weights onto an already-built model in place.
+
+    The complete adapter contract is verified before any tensor is copied so a
+    rejected payload cannot leave the live model partially mutated.
+    """
+    model_state = model.state_dict()
+    expected_keys = {
+        name for name, param in model.named_parameters() if param.requires_grad
+    }
+    # Checkpoints always carry this scalar, even when it was frozen during
+    # training, so a hot-swap must replace it rather than retain a stale value.
+    expected_keys.add("logit_scale")
+
+    received_keys = set(adapter_state)
+    unexpected = sorted(received_keys - expected_keys)
+    if unexpected:
+        raise ValueError(
+            f"Adapter state contains unexpected keys: {unexpected}"
+        )
+    missing = sorted(expected_keys - received_keys)
+    if missing:
+        raise ValueError(f"Adapter state is missing expected keys: {missing}")
+
+    invalid_tensors = []
+    for key in sorted(expected_keys):
+        value = adapter_state[key]
+        expected = model_state[key]
+        if not isinstance(value, torch.Tensor):
+            invalid_tensors.append(f"{key}: expected a tensor")
+        elif value.shape != expected.shape:
+            invalid_tensors.append(
+                f"{key}: shape {tuple(value.shape)} != {tuple(expected.shape)}"
+            )
+        elif value.dtype != expected.dtype:
+            invalid_tensors.append(
+                f"{key}: dtype {value.dtype} != {expected.dtype}"
+            )
+    if invalid_tensors:
+        raise ValueError(
+            "Adapter state contains incompatible tensors: "
+            + "; ".join(invalid_tensors)
+        )
+
+    model.load_state_dict(dict(adapter_state), strict=False)
+
+
 def load_checkpoint(
     path: str, map_location: str | torch.device = "cpu"
 ) -> Tuple[LightweightVLM, Dict]:
-    payload = torch.load(path, map_location=map_location, weights_only=False)
+    payload = read_checkpoint_payload(path, map_location=map_location)
     cfg = ModelConfig(**payload["model_config"])
     model = LightweightVLM.from_config(cfg)
 

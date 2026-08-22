@@ -120,6 +120,7 @@ def test_predict_probe_image_returns_target_rank_without_true_label() -> None:
     assert result["target_rank"] == 1
     assert result["top_k"][0]["class_name"] == "rose"
     assert len(result["top_k"]) == 2
+    assert result["class_scores"]["rose"] > result["class_scores"]["tulip"]
 
 
 def test_run_checkpoint_probe_writes_comparison_and_images(

@@ -1,0 +1,27 @@
+{% if error %}
+<div class="banner bad-banner" role="alert">{{ error }}</div>
+{% elif job.status == "done" %}
+<div class="banner ok-banner" data-candidate-id="{{ job.candidate_id }}" id="job-done">
+  <strong>&check; Done — “{{ job.class_name }}” unlearned.</strong>
+  <span class="muted">{{ job.method }} · {{ job.steps }} steps ·
+    {% if job.source == "precomputed" %}restored from the completed experiment{% else %}fresh job ({{ "%.1f"|format(job.wall_time_s) }}s){% endif %}
+  </span>
+  <p class="muted">Sibling classes watched in the same group:
+    {% for sib in job.sibling_classes %}<code>{{ sib }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
+  </p>
+  <p>Scroll to step 3 and upload an image to test it.</p>
+</div>
+{% elif job.status == "failed" %}
+<div class="banner bad-banner" role="alert">
+  Job failed: {{ job.error }}
+</div>
+{% else %}
+<div class="banner running-banner"
+     hx-get="/jobs/{{ job.job_id }}/status"
+     hx-trigger="every 1.5s"
+     hx-swap="outerHTML">
+  <span class="spinner"></span>
+  Unlearning “{{ job.class_name }}” — {{ job.method }}, {{ job.steps }} steps…
+  {% if job.status == "queued" %}(queued){% endif %}
+</div>
+{% endif %}

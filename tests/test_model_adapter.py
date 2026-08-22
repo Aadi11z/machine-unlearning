@@ -8,11 +8,12 @@ import torch
 from transformers import CLIPConfig, CLIPModel, CLIPTextConfig, CLIPVisionConfig
 
 from unml.model import (
+    LightweightVLM,
     LoRALinear,
     LowRankAdapter,
-    LightweightVLM,
     ModelConfig,
     _feature_tensor,
+    apply_adapter_state,
     load_checkpoint,
     save_checkpoint,
 )
@@ -257,3 +258,89 @@ def test_vision_lora_checkpoint_restores_only_adapter_state(
         restored_first.lora_b.weight,
         first_lora.lora_b.weight,
     )
+
+
+def _adapter_state(model: LightweightVLM) -> dict[str, torch.Tensor]:
+    state = {
+        name: parameter.detach().clone()
+        for name, parameter in model.named_parameters()
+        if parameter.requires_grad
+    }
+    state["logit_scale"] = model.logit_scale.detach().clone()
+    return state
+
+
+def _assert_model_state_unchanged(
+    model: LightweightVLM, reference: dict[str, torch.Tensor]
+) -> None:
+    for key, value in model.state_dict().items():
+        assert torch.equal(value, reference[key])
+
+
+def test_apply_adapter_state_rejects_missing_keys_before_copying(monkeypatch) -> None:
+    _patch_tiny_clip(monkeypatch, num_vision_layers=2)
+    model = LightweightVLM(
+        ModelConfig(
+            model_name="tiny",
+            adapter_type="vision_lora",
+            lora_layers="all",
+            train_logit_scale=False,
+        )
+    )
+    reference = copy.deepcopy(model.state_dict())
+    adapter_state = _adapter_state(model)
+    first_key, missing_key = list(adapter_state)[:2]
+    adapter_state[first_key].add_(1.0)
+    del adapter_state[missing_key]
+
+    with pytest.raises(ValueError, match="missing expected keys"):
+        apply_adapter_state(model, adapter_state)
+
+    _assert_model_state_unchanged(model, reference)
+
+
+def test_apply_adapter_state_rejects_wrong_shape_before_copying(monkeypatch) -> None:
+    _patch_tiny_clip(monkeypatch, num_vision_layers=2)
+    model = LightweightVLM(
+        ModelConfig(
+            model_name="tiny",
+            adapter_type="vision_lora",
+            lora_layers="all",
+            train_logit_scale=False,
+        )
+    )
+    reference = copy.deepcopy(model.state_dict())
+    adapter_state = _adapter_state(model)
+    first_key, malformed_key = list(adapter_state)[:2]
+    adapter_state[first_key].add_(1.0)
+    original = adapter_state[malformed_key]
+    adapter_state[malformed_key] = torch.zeros(
+        (*original.shape, 1), dtype=original.dtype
+    )
+
+    with pytest.raises(ValueError, match="incompatible tensors"):
+        apply_adapter_state(model, adapter_state)
+
+    _assert_model_state_unchanged(model, reference)
+
+
+def test_apply_adapter_state_rejects_wrong_dtype_before_copying(monkeypatch) -> None:
+    _patch_tiny_clip(monkeypatch, num_vision_layers=2)
+    model = LightweightVLM(
+        ModelConfig(
+            model_name="tiny",
+            adapter_type="vision_lora",
+            lora_layers="all",
+            train_logit_scale=False,
+        )
+    )
+    reference = copy.deepcopy(model.state_dict())
+    adapter_state = _adapter_state(model)
+    first_key, malformed_key = list(adapter_state)[:2]
+    adapter_state[first_key].add_(1.0)
+    adapter_state[malformed_key] = adapter_state[malformed_key].to(torch.float64)
+
+    with pytest.raises(ValueError, match="incompatible tensors"):
+        apply_adapter_state(model, adapter_state)
+
+    _assert_model_state_unchanged(model, reference)

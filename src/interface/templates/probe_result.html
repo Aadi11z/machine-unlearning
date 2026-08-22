@@ -1,0 +1,66 @@
+{% if error %}
+<div class="banner warn-banner" role="alert">{{ error }}</div>
+{% else %}
+<section class="result-panel">
+  <h3 class="verdict">{{ result.verdict.verdict }}</h3>
+  <p class="muted">{{ result.verdict.summary }}</p>
+
+  <div class="outcome-grid">
+    {% for card in result.verdict.outcome_cards %}
+    <div class="mini-card">
+      <h4>{{ card.title }}</h4>
+      <p>{{ card.text }}</p>
+    </div>
+    {% endfor %}
+  </div>
+
+  <div class="metric-grid">
+    {% for card in result.verdict.metric_cards %}
+    <div class="metric-card">
+      <div class="metric-label">{{ card.label }}</div>
+      <div class="metric-value">{{ card.value }}</div>
+      <div class="metric-note">{{ card.note }}</div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <div class="tables-row">
+    <table class="topk-table">
+      <thead><tr><th colspan="3">Baseline top-5</th></tr><tr><th>#</th><th>Class</th><th>Conf.</th></tr></thead>
+      <tbody>
+        {% for row in result.baseline_top_k %}
+        <tr{% if row.class_name == result.target_class_name %} class="target-row"{% endif %}>
+          <td>{{ row.rank }}</td><td>{{ row.class_name }}</td><td>{{ "%.2f"|format(row.probability * 100) }}%</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <table class="topk-table">
+      <thead><tr><th colspan="3">Unlearned top-5</th></tr><tr><th>#</th><th>Class</th><th>Conf.</th></tr></thead>
+      <tbody>
+        {% for row in result.candidate_top_k %}
+        <tr{% if row.class_name == result.target_class_name %} class="target-row"{% endif %}>
+          <td>{{ row.rank }}</td><td>{{ row.class_name }}</td><td>{{ "%.2f"|format(row.probability * 100) }}%</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if result.metrics_table %}
+  <details class="metrics-details">
+    <summary>Recorded held-out metrics for this checkpoint</summary>
+    <table class="topk-table metrics-table">
+      <tbody>
+        {% for row in result.metrics_table %}
+        <tr><td>{{ row.Metric }}</td><td>{{ row.Value }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </details>
+  {% endif %}
+
+  <p class="muted small">{{ result.verdict.source_note }}</p>
+  <p class="muted small">{{ result.verdict.note }}</p>
+</section>
+{% endif %}

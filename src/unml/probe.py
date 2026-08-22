@@ -135,6 +135,7 @@ def predict_probe_image(
     target_class_id = _class_name_to_id(predictor.class_names, target_class_name)
     target_probability = float(probabilities[target_class_id].item())
     target_rank = int((probabilities > target_probability).sum().item()) + 1
+    all_scores = probabilities.detach().cpu().tolist()
 
     return {
         "top_k": [
@@ -152,6 +153,10 @@ def predict_probe_image(
         "target_class_name": predictor.class_names[target_class_id],
         "target_probability": target_probability,
         "target_rank": target_rank,
+        "class_scores": {
+            class_name: float(probability)
+            for class_name, probability in zip(predictor.class_names, all_scores)
+        },
     }
 
 

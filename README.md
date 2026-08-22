@@ -34,14 +34,12 @@ research hypothesis until the configured GPU experiments are complete.
 
 ## Tests
 ```bash
-pytest -q
+uv run --locked pytest -q
 ```
 
 ## Setup
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+uv sync --locked
 ```
 
 ## Config-Driven Run
@@ -236,24 +234,21 @@ Markdown, and optional source images under the request-specific `probes/`
 directory. This is a per-example diagnostic; paper claims still require the
 aggregate evaluation metrics above.
 
-## Local Checkpoint Interface
+## Unlearning Interface
 
-The local probe interface compares the configured CIFAR-100 `rose_selective`
-baseline with a registered unlearned checkpoint on an uploaded or pasted image.
-It keeps all 100 CIFAR-100 labels eligible for prediction and shows raw top-5
-rankings plus the `rose` probability change. Uploaded images are exploratory
-out-of-distribution probes, not a replacement for the recorded evaluation.
+The FastAPI interface serves the frozen CIFAR-100 CLIP backbone and lets users
+choose a class, run an unlearning job, and compare top-5 predictions on an
+uploaded image. Uploaded images are exploratory out-of-distribution probes,
+not a replacement for recorded held-out evaluation.
 
 ```bash
-uv sync --all-groups
+uv sync --locked
 uv run helpers/cache_model.py --dataset cifar100
-uv run scripts/probe_ui.py --offline --device auto
+uv run python scripts/run_interface.py --offline --device cpu
 ```
 
-The interface binds only to `127.0.0.1`; it does not enable public Gradio
-sharing, accept URLs or checkpoint paths from the browser, write model files,
-or submit training jobs. The startup-only checkpoint registry is in
-`config/parameters.yaml` under `probe_ui`.
+Open <http://127.0.0.1:8000>. Local mode runs jobs as subprocesses; public
+deployments must use `--hosted` with the Modal worker credentials.
 
 ## Notes
 - CIFAR-10 backbone: `openai/clip-vit-base-patch32` (frozen).

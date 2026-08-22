@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UN-ML · CIFAR-100 Unlearning Explorer</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+<main class="shell">
+  <header class="model-strip">
+    <div>
+      <span class="strip-label">Loaded model</span>
+      <strong>{{ backbone }}</strong>
+      <span class="muted">frozen backbone + trainable LoRA deltas</span>
+    </div>
+    <div>
+      <span class="strip-label">Dataset</span>
+      <strong>CIFAR-100</strong>
+      <span class="muted">{{ num_classes }} classes · 20 groups</span>
+    </div>
+    <div>
+      <span class="strip-label">Baseline</span>
+      {% if baseline_ready %}<strong class="ok">ready</strong>{% else %}<strong class="bad">missing</strong>{% endif %}
+      <span class="muted">class-agnostic fine-tuned checkpoint</span>
+    </div>
+  </header>
+
+  <section class="card">
+    <h2><span class="step-num">1</span> Pick the class to forget</h2>
+    <p class="muted">Classes are grouped by their CIFAR-100 superclass. The four
+    sibling classes in the same group are watched during unlearning.</p>
+    <form id="unlearn-form" hx-post="/unlearn" hx-target="#job-panel" hx-swap="innerHTML">
+      <input type="hidden" name="class_id" id="class-id-input" value="">
+      <div class="groups">
+        {% for group in groups %}
+        <details class="group"{% if group.superclass == "flowers" %} open{% endif %}>
+          <summary>{{ group.superclass.replace("_", " ") }}</summary>
+          <div class="classes">
+            {% for name in group.class_names %}
+            <label class="class-chip">
+              <input type="radio" name="class_name_choice" value="{{ name }}"
+                     onclick="pickClass('{{ name }}')">
+              <span>{{ name }}</span>
+            </label>
+            {% endfor %}
+          </div>
+        </details>
+        {% endfor %}
+      </div>
+
+      <h2 style="margin-top:22px"><span class="step-num">2</span> Run the unlearning job</h2>
+      <div class="run-row">
+        <select name="method" aria-label="Unlearning method">
+          {% for method in methods %}
+          <option value="{{ method }}" {% if method == "ga_kl" %}selected{% endif %}>{{ method }}</option>
+          {% endfor %}
+        </select>
+        <select name="steps" aria-label="Optimizer steps">
+          {% for step in step_options %}
+          <option value="{{ step }}" {% if step == 200 %}selected{% endif %}>{{ step }} steps</option>
+          {% endfor %}
+        </select>
+        <button type="submit" class="primary">Forget it &rarr;</button>
+      </div>
+      <p class="muted" id="picked-note">No class selected yet.</p>
+    </form>
+    <div id="job-panel"></div>
+  </section>
+
+  <section class="card" id="probe-card">
+    <h2><span class="step-num">3</span> Test the unlearned model</h2>
+    <p class="muted">Upload or paste an image. The platform scores it under the
+    baseline and under the unlearned checkpoint, side by side.</p>
+    <form hx-post="/probe" hx-target="#probe-result" hx-encoding="multipart/form-data">
+      <input type="hidden" name="candidate_id" id="candidate-id-input" value="">
+      <div class="run-row">
+        <input type="file" name="image" accept="image/*" required>
+        <input type="text" name="retained_label" placeholder="Optional retained subject (e.g. woman)">
+        <button type="submit" class="primary">Compare</button>
+      </div>
+    </form>
+    <div id="probe-result"></div>
+  </section>
+
+  <footer class="muted footer-note">
+    Single-image probes are exploratory evidence, not proof of deletion.
+    Held-out metrics shown with each result come from recorded evaluations.
+  </footer>
+</main>
+<script>
+function pickClass(name) {
+  document.getElementById('class-id-input').value = name;
+  document.getElementById('picked-note').textContent =
+    'Selected: ' + name + ' — press “Forget it” to run the job.';
+}
+document.addEventListener('htmx:afterSwap', function (event) {
+  const marker = document.querySelector('#job-panel [data-candidate-id]');
+  if (marker) {
+    document.getElementById('candidate-id-input').value = marker.dataset.candidateId;
+  }
+});
+</script>
+</body>
+</html>
