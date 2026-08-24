@@ -20,6 +20,7 @@ SCRIPTS = [
     "scripts/run_unlearning.py",
     "scripts/evaluate_attacks.py",
     "scripts/run_pipeline.py",
+    "scripts/run_lora_pilots.py",
 ]
 
 

@@ -55,9 +55,10 @@ def evaluate_classification(
     total = 0
     correct = 0
     losses = []
+    class_total: dict[int, int] = {}
+    class_correct: dict[int, int] = {}
     for step, batch in enumerate(loader):
-        if max_batches is not None and step >= max_batches: 
-            # if you want early stopping, declare max_batches
+        if max_batches is not None and step >= max_batches:
             break
         batch = move_to_device(batch, device, non_blocking=non_blocking)
         logits = model.class_logits_from_text_features(
@@ -65,17 +66,28 @@ def evaluate_classification(
             class_text_features=class_text_features,
         )
         labels = batch["labels"]
-        loss = F.cross_entropy(logits, labels) # Per-Batch loss computation
-        preds = logits.argmax(dim=-1) # gets the indices of the maximum prediction, index of the max value across a row in the tensor, used to get predicted class
-        correct += int((preds == labels).sum().item()) # no. of correctly predicted samples
-        total += int(labels.numel()) # no. of processed samples
-        losses.append(tensor_to_float(loss)) # scalar loss values 
+        loss = F.cross_entropy(logits, labels)
+        preds = logits.argmax(dim=-1)
+        correct += int((preds == labels).sum().item())
+        total += int(labels.numel())
+        losses.append(tensor_to_float(loss))
+        for label, prediction in zip(labels.tolist(), preds.tolist()):
+            class_total[label] = class_total.get(label, 0) + 1
+            class_correct[label] = class_correct.get(label, 0) + int(
+                label == prediction
+            )
 
     acc = 0.0 if total == 0 else correct / total
     loss_value = float(np.mean(losses)) if losses else 0.0
+    macro_accuracy = (
+        float(np.mean([class_correct[label] / count for label, count in class_total.items()]))
+        if class_total
+        else 0.0
+    )
     return {
         "accuracy": acc,
         "loss": loss_value,
+        "macro_accuracy": macro_accuracy,
         "n": float(total),
     }
 

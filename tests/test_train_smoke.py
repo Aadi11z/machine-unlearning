@@ -52,3 +52,22 @@ def test_smoke_evaluation_limits_every_loader() -> None:
 
     assert metrics["retain_val_acc"] == 1.0
     assert metrics["test_all_acc"] == 1.0
+
+def test_pilot_evaluation_does_not_touch_test_loaders() -> None:
+    loaders = {"retain_val": [_batch(0, 0)]}
+    class_text_inputs = {
+        "input_ids": torch.ones((2, 3), dtype=torch.long),
+        "attention_mask": torch.ones((2, 3), dtype=torch.long),
+    }
+
+    metrics = _evaluate_all(
+        EvalModel(),
+        loaders,
+        class_text_inputs,
+        torch.device("cpu"),
+        evaluate_test=False,
+    )
+
+    assert metrics["retain_val_acc"] == 1.0
+    assert metrics["retain_val_macro_accuracy"] == 1.0
+    assert metrics["retain_val_loss"] > 0.0

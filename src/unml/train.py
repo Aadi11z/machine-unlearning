@@ -59,6 +59,7 @@ class FineTuneConfig:
     lora_alpha: float = 8.0
     lora_layers: str | list[int] = "all"
     lora_targets: tuple[str, ...] | list[str] = ("q_proj", "v_proj")
+    lora_dropout: float = 0.0
     train_logit_scale: bool = True
     precision: str = "fp32"
     gradient_checkpointing: bool = False
@@ -77,6 +78,7 @@ class FineTuneConfig:
     device: str = "auto"
     local_files_only: bool = False
     max_eval_batches: int | None = None
+    evaluate_test: bool = True
     smoke_mode: bool = False
     training_mode: str = "finetune"
     train_loader_key: str = "finetune_train"
@@ -206,6 +208,7 @@ def validate_oracle_source_config(
         "lora_alpha",
         "lora_layers",
         "lora_targets",
+        "lora_dropout",
         "train_logit_scale",
         "precision",
         "gradient_checkpointing",
@@ -289,6 +292,7 @@ def _validate_loaded_model_config(
         "lora_alpha",
         "lora_layers",
         "lora_targets",
+        "lora_dropout",
         "train_logit_scale",
         "precision",
         "gradient_checkpointing",
@@ -316,6 +320,7 @@ def _evaluate_all(
     device: torch.device,
     max_batches: int | None = None,
     non_blocking: bool = False,
+    evaluate_test: bool = True,
 ) -> Dict[str, float]:
     model.eval()
     class_text_features = build_class_text_features(
@@ -331,6 +336,13 @@ def _evaluate_all(
     retain_val = evaluate_classification(
         model, loaders["retain_val"], **evaluation_args
     )
+    metrics: Dict[str, float] = {
+        "retain_val_acc": retain_val["accuracy"],
+        "retain_val_loss": retain_val["loss"],
+        "retain_val_macro_accuracy": retain_val["macro_accuracy"],
+    }
+    if not evaluate_test:
+        return metrics
     test_all = evaluate_classification(
         model, loaders["test_all"], **evaluation_args
     )
@@ -340,13 +352,14 @@ def _evaluate_all(
     forget_train = evaluate_classification(
         model, loaders["forget"], **evaluation_args
     )
-    return {
-        "retain_val_acc": retain_val["accuracy"],
-        "retain_val_loss": retain_val["loss"],
-        "test_all_acc": test_all["accuracy"],
-        "test_retain_acc": test_retain["accuracy"],
-        "forget_train_acc": forget_train["accuracy"],
-    }
+    metrics.update(
+        {
+            "test_all_acc": test_all["accuracy"],
+            "test_retain_acc": test_retain["accuracy"],
+            "forget_train_acc": forget_train["accuracy"],
+        }
+    )
+    return metrics
 
 
 def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
@@ -426,6 +439,7 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
         lora_alpha=cfg.lora_alpha,
         lora_layers=cfg.lora_layers,
         lora_targets=cfg.lora_targets,
+        lora_dropout=cfg.lora_dropout,
         train_logit_scale=cfg.train_logit_scale,
         precision=cfg.precision,
         gradient_checkpointing=cfg.gradient_checkpointing,
@@ -634,6 +648,7 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
             device,
             max_batches=cfg.max_eval_batches,
             non_blocking=cfg.non_blocking,
+            evaluate_test=cfg.evaluate_test,
         )
         evaluation_seconds += time.perf_counter() - evaluation_started
         final_metrics = eval_metrics

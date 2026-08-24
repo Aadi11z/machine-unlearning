@@ -40,6 +40,7 @@ class ModelConfig:
     lora_alpha: float = 8.0
     lora_layers: str | Sequence[int] = "all"
     lora_targets: Sequence[str] = ("q_proj", "v_proj")
+    lora_dropout: float = 0.0
     train_logit_scale: bool = True
     precision: str = "fp32"
     gradient_checkpointing: bool = False
@@ -55,11 +56,13 @@ class ModelConfig:
             raise ValueError("Adapter ranks must be positive")
         if self.precision not in {"fp32", "fp16", "bf16"}:
             raise ValueError("precision must be one of: fp32, fp16, bf16")
-        invalid_targets = set(self.lora_targets) - {"q_proj", "v_proj"}
+        invalid_targets = set(self.lora_targets) - {"q_proj", "k_proj", "v_proj"}
         if invalid_targets:
             raise ValueError(
                 f"Unsupported vision LoRA targets: {sorted(invalid_targets)}"
             )
+        if not 0.0 <= self.lora_dropout < 1.0:
+            raise ValueError("lora_dropout must be in [0, 1)")
 
 
 class LowRankAdapter(nn.Module):
@@ -84,18 +87,27 @@ class LowRankAdapter(nn.Module):
 class LoRALinear(nn.Module):
     """Frozen linear projection with a trainable low-rank weight update."""
 
-    def __init__(self, base_layer: nn.Linear, rank: int, alpha: float):
+    def __init__(
+        self,
+        base_layer: nn.Linear,
+        rank: int,
+        alpha: float,
+        dropout: float = 0.0,
+    ):
         super().__init__()
         if rank > min(base_layer.in_features, base_layer.out_features):
             raise ValueError(
                 f"LoRA rank {rank} exceeds projection dimensions "
                 f"{base_layer.in_features}x{base_layer.out_features}"
             )
+        if not 0.0 <= dropout < 1.0:
+            raise ValueError("LoRA dropout must be in [0, 1)")
 
         self.base_layer = base_layer
         self.rank = rank
         self.alpha = alpha
         self.scale = alpha / rank
+        self.dropout = nn.Dropout(dropout)
         self.lora_a = nn.Linear(base_layer.in_features, rank, bias=False)
         self.lora_b = nn.Linear(rank, base_layer.out_features, bias=False)
         nn.init.kaiming_uniform_(self.lora_a.weight, a=5**0.5)
@@ -106,7 +118,7 @@ class LoRALinear(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         base = self.base_layer(x)
-        lora_input = x.to(dtype=self.lora_a.weight.dtype)
+        lora_input = self.dropout(x.to(dtype=self.lora_a.weight.dtype))
         delta = self.lora_b(self.lora_a(lora_input)).to(dtype=base.dtype)
         return base + self.scale * delta
 
@@ -223,6 +235,7 @@ class LightweightVLM(nn.Module):
                         projection,
                         rank=self.cfg.lora_rank,
                         alpha=self.cfg.lora_alpha,
+                        dropout=self.cfg.lora_dropout,
                     ),
                 )
 
