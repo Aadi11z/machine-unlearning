@@ -8,6 +8,7 @@ from unml.comparators import (
     comparator_manifest_metadata,
     comparator_spec,
     fit_linear_probe,
+    interpolate_lora_delta,
     validate_comparison,
 )
 
@@ -56,3 +57,9 @@ def test_linear_probe_fits_frozen_features() -> None:
     )
     assert isinstance(probe, torch.nn.Module)
     assert metrics["validation_accuracy"] >= 0.99
+
+def test_lora_delta_interpolation_validates_adapter_contract() -> None:
+    base = {"a": torch.tensor([0.0, 2.0])}
+    adapted = {"a": torch.tensor([2.0, 4.0])}
+    result = interpolate_lora_delta(base, adapted, 0.25)
+    assert torch.equal(result["a"], torch.tensor([0.5, 2.5]))

@@ -143,3 +143,23 @@ def validate_comparison(
         return
     if baseline_spec.unlearning_compatible != candidate_spec.unlearning_compatible:
         raise ValueError("Comparison mixes incompatible unlearning capabilities")
+
+
+def interpolate_lora_delta(
+    base_state: Mapping[str, torch.Tensor],
+    adapted_state: Mapping[str, torch.Tensor],
+    weight: float,
+) -> dict[str, torch.Tensor]:
+    """Interpolate an adapter delta without changing the frozen backbone."""
+    if not 0.0 <= weight <= 1.0:
+        raise ValueError("Interpolation weight must be in [0, 1]")
+    if set(base_state) != set(adapted_state):
+        raise ValueError("Base and adapted adapter keys differ")
+    result: dict[str, torch.Tensor] = {}
+    for key in base_state:
+        base = base_state[key]
+        adapted = adapted_state[key]
+        if base.shape != adapted.shape or base.dtype != adapted.dtype:
+            raise ValueError(f"Adapter tensor contract differs for {key!r}")
+        result[key] = base + weight * (adapted - base)
+    return result
