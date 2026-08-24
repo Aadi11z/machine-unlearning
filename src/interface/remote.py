@@ -72,10 +72,9 @@ def write_job_artifacts(
     reference_cfg = _cfg_from(baseline_payload["model_config"])
 
     from unml.model import (
-        LightweightVLM,
-        apply_adapter_state,
         read_safetensors_metadata,
         validate_adapter_payload,
+        validate_adapter_state,
     )
 
     metadata = read_safetensors_metadata(checkpoint_bytes)
@@ -92,11 +91,9 @@ def write_job_artifacts(
         reference_cfg,
         source=f"remote:{request_name}_{method}",
     )
-    # Validate the complete tensor contract against a fresh baseline-shaped
-    # model before persisting anything.  This keeps malformed remote deltas
-    # from becoming apparently successful jobs that fail only when probed.
-    validation_model = LightweightVLM.from_config(reference_cfg)
-    apply_adapter_state(validation_model, remote_tensors)
+    # Validate against the trusted baseline's complete adapter contract before
+    # persisting anything. This avoids loading a second frozen CLIP backbone.
+    validate_adapter_state(remote_tensors, baseline_payload["adapter_state_dict"])
 
     job_dir = (
         output_root

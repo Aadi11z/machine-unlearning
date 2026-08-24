@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -175,6 +176,50 @@ def test_precomputed_job_completes_and_probe_round_trips(client_env) -> None:
     assert len(payload["baseline_top_k"]) >= 1
     assert len(payload["candidate_top_k"]) >= 1
     assert payload["metrics_table"][0]["Value"] == "0.0500"
+
+
+def test_persisted_job_can_be_probed_after_process_restart(client_env) -> None:
+    catalog = client_env.catalog
+    historical = catalog.precomputed_candidate(
+        class_id=70, method="ga_kl", steps=200
+    )
+    assert historical is not None
+
+    job_root = (
+        catalog.output_root
+        / "cifar100"
+        / "jobs"
+        / "rose_selective_ga_kl_200"
+    )
+    checkpoint = job_root / "checkpoints" / "unlearn_ga_kl.pt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_bytes(historical.checkpoint_path.read_bytes())
+    (job_root / "job_result.json").write_text(
+        json.dumps(
+            {
+                "class_id": 70,
+                "class_name": "rose",
+                "request_name": "rose_selective",
+                "superclass": "flowers",
+                "sibling_classes": [54, 62, 82, 92],
+                "method": "ga_kl",
+                "steps": 200,
+                "result": {"metrics": {"forget_acc": 0.0}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    # The fixture's JobManager has not submitted this candidate; only the
+    # on-disk result exists, matching a newly restarted web process.
+    probe = client_env.client.post(
+        "/api/probe",
+        files={"image": ("probe.png", client_env.png, "image/png")},
+        data={"candidate_id": "rose_selective_ga_kl_200"},
+    )
+
+    assert probe.status_code == 200
+    assert probe.json()["candidate"]["source"] == "job"
 
 
 def test_probe_html_fragment_flow(client_env) -> None:

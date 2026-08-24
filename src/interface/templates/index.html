@@ -23,7 +23,7 @@
     <div>
       <span class="strip-label">Baseline</span>
       {% if baseline_ready %}<strong class="ok">ready</strong>{% else %}<strong class="bad">missing</strong>{% endif %}
-      <span class="muted">class-agnostic fine-tuned checkpoint</span>
+      <span class="muted">loaded fine-tuned checkpoint</span>
     </div>
   </header>
 
@@ -71,7 +71,7 @@
 
   <section class="card" id="probe-card">
     <h2><span class="step-num">3</span> Test the unlearned model</h2>
-    <p class="muted">Upload or paste an image. The platform scores it under the
+    <p class="muted">Upload an image. The platform scores it under the
     baseline and under the unlearned checkpoint, side by side.</p>
     <form hx-post="/probe" hx-target="#probe-result" hx-encoding="multipart/form-data">
       <input type="hidden" name="candidate_id" id="candidate-id-input" value="">

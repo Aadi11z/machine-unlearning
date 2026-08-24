@@ -20,15 +20,7 @@ from unml.config import (
     resolve_stage_output_dir,
     resolve_value,
 )
-
-UNLEARNING_METHODS = (
-    "retain_only",
-    "ga_kl",
-    "counterfactual_rebind",
-    "entropy_rebind",
-    "h_tgsd",
-    "h_tgsd_no_sibling_preservation",
-)
+from unml.methods import UNLEARNING_METHODS
 
 
 def parse_args() -> argparse.Namespace:

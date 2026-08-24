@@ -126,7 +126,7 @@ class SubprocessJobRunner:
                 f"{completed.stderr[-2000:]}"
             )
         result_path = output_dir / "job_result.json"
-        payload = _load_json(result_path)
+        payload = json.loads(result_path.read_text(encoding="utf-8"))
         checkpoint = payload.get("result", {}).get("checkpoint")
         if not checkpoint:
             raise RuntimeError(f"Job result at {result_path} has no checkpoint")
@@ -135,12 +135,6 @@ class SubprocessJobRunner:
         job.comparison_model = job.candidate_id
         job.source = "job"
         job.wall_time_s = time.time() - started
-
-
-def _load_json(path: Path) -> dict:
-    import json
-
-    return json.loads(path.read_text())
 
 
 class ModalJobRunner:
@@ -152,18 +146,23 @@ class ModalJobRunner:
         endpoint_url: str,
         secret: str,
         output_root: Path,
-        timeout_s: int = 3700,
+        timeout_s: int = 4000,
+        request_timeout_s: int = 30,
+        poll_interval_s: float = 2.0,
     ) -> None:
         self.endpoint_url = endpoint_url
         self.secret = secret
         self.output_root = output_root
         self.timeout_s = timeout_s
+        self.request_timeout_s = request_timeout_s
+        self.poll_interval_s = poll_interval_s
 
     def __call__(self, job: JobRecord) -> None:
-        import urllib.error
-        import urllib.request
-
-        from .remote import SIGNATURE_HEADER, parse_job_response, sign_payload, write_job_artifacts
+        from .remote import (
+            decode_checkpoint,
+            parse_job_response,
+            write_job_artifacts,
+        )
 
         body = json.dumps(
             {
@@ -172,22 +171,30 @@ class ModalJobRunner:
                 "steps": job.steps,
             }
         ).encode("utf-8")
-        request = urllib.request.Request(
-            self.endpoint_url,
-            data=body,
-            method="POST",
-            headers={
-                "Content-Type": "application/json",
-                SIGNATURE_HEADER: sign_payload(self.secret, body),
-            },
-        )
         started = time.time()
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout_s) as response:
-                payload = parse_job_response(response.read())
-        except urllib.error.HTTPError as error:
-            detail = error.read().decode("utf-8", errors="replace")[:500]
-            raise RuntimeError(f"Worker returned {error.code}: {detail}") from error
+        status, response_body = self._post(body)
+        response_payload = json.loads(response_body)
+        if status == 200 and "checkpoint_b64" in response_payload:
+            payload = parse_job_response(response_body)
+        elif status == 202:
+            call_id = str(response_payload.get("call_id", ""))
+            if not call_id:
+                raise RuntimeError("Worker accepted the job without a call id")
+            deadline = started + self.timeout_s
+            while True:
+                if time.time() >= deadline:
+                    raise TimeoutError(
+                        f"Modal job {call_id} did not finish within {self.timeout_s}s"
+                    )
+                time.sleep(self.poll_interval_s)
+                poll_body = json.dumps({"call_id": call_id}).encode("utf-8")
+                poll_status, poll_response = self._post(poll_body)
+                if poll_status == 202:
+                    continue
+                payload = parse_job_response(poll_response)
+                break
+        else:
+            raise RuntimeError(f"Unexpected worker status {status}")
 
         _validate_worker_identity(payload, job)
         checkpoint_path = write_job_artifacts(
@@ -199,7 +206,7 @@ class ModalJobRunner:
             sibling_classes=job.sibling_classes,
             method=job.method,
             steps=job.steps,
-            checkpoint_bytes=_decode_checkpoint_field(payload["checkpoint_b64"]),
+            checkpoint_bytes=decode_checkpoint(payload["checkpoint_b64"]),
             metrics=dict(payload.get("metrics", {})),
             wall_time_s=float(payload.get("wall_time_s", 0.0)),
         )
@@ -209,11 +216,29 @@ class ModalJobRunner:
         job.source = "modal"
         job.wall_time_s = time.time() - started
 
+    def _post(self, body: bytes) -> tuple[int, bytes]:
+        import urllib.error
+        import urllib.request
 
-def _decode_checkpoint_field(encoded: str) -> bytes:
-    from .remote import decode_checkpoint
+        from .remote import SIGNATURE_HEADER, sign_payload
 
-    return decode_checkpoint(encoded)
+        request = urllib.request.Request(
+            self.endpoint_url,
+            data=body,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                SIGNATURE_HEADER: sign_payload(self.secret, body),
+            },
+        )
+        try:
+            with urllib.request.urlopen(
+                request, timeout=self.request_timeout_s
+            ) as response:
+                return response.status, response.read()
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode("utf-8", errors="replace")[:500]
+            raise RuntimeError(f"Worker returned {error.code}: {detail}") from error
 
 
 def _validate_worker_identity(payload: dict, job: JobRecord) -> None:

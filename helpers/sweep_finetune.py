@@ -9,7 +9,8 @@ Data only needs to be prepared once (prepare_data.py); this script reuses
 the existing data dir and split file across all runs.
 
 Usage:
-    python scripts/sweep_finetune.py --data-dir data --split-path outputs/splits/cifar10_split.json
+    python helpers/sweep_finetune.py --data-dir data \
+        --split-path outputs/cifar10/splits/cifar10_split.json
 """
 from __future__ import annotations
 
@@ -32,9 +33,17 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Sweep finetuning hyperparameters")
     p.add_argument("--data-dir", type=str, default="data")
-    p.add_argument("--split-path", type=str, default="outputs/splits/cifar10_split.json")
-    p.add_argument("--output-root", type=str, default="outputs/sweep_finetune",
-                    help="Root dir; each run gets a subdirectory")
+    p.add_argument(
+        "--split-path",
+        type=str,
+        default="outputs/cifar10/splits/cifar10_split.json",
+    )
+    p.add_argument(
+        "--output-root",
+        type=str,
+        default="outputs/cifar10/sweep_finetune",
+        help="Root dir; each run gets a subdirectory",
+    )
     p.add_argument("--model-name", type=str, default="openai/clip-vit-base-patch32")
     p.add_argument("--epochs", type=int, default=5)
     p.add_argument("--batch-size", type=int, default=128)
@@ -160,4 +169,4 @@ if __name__ == "__main__":
 #   # Delete last checkpoint for one specific run only                                                     
 #   python scripts/cleanup_checkpoints.py --delete --include-last --run-name r8_a8.0_lr0.001_wd0.0001_s42                                             
 #   # Nuclear option: also clean old oversized checkpoints                             
-#   python scripts/cleanup_checkpoints.py --delete --include-oversized 
+#   python scripts/cleanup_checkpoints.py --delete --include-oversized

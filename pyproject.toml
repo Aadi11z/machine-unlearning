@@ -12,6 +12,7 @@ dependencies = [
   "torch>=2.1.0",
   "torchvision>=0.16.0",
   "transformers>=4.40.0,<5.0",
+  "safetensors>=0.4.0",
   "tqdm>=4.66.0",
   "PyYAML>=6.0",
   "numpy>=1.26.0,<2.0",
@@ -26,10 +27,16 @@ dependencies = [
   "python-multipart>=0.0.9"
 ]
 
+[project.scripts]
+unml-interface = "interface.cli:main"
+
 [dependency-groups]
 dev = [
   "pytest>=8.0",
   "httpx>=0.27.0"
+]
+modal = [
+  "modal>=1.0"
 ]
 
 [tool.setuptools]

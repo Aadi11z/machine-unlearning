@@ -4,27 +4,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from unml.methods import UNLEARNING_METHODS
 from unml.request_factory import resolve_selective_request
 
 DATASET_NAME = "cifar100"
 NUM_CLASSES = 100
 BACKBONE_NAME = "openai/clip-vit-base-patch16"
 
-ALLOWED_METHODS = (
-    "retain_only",
-    "ga_kl",
-    "counterfactual_rebind",
-    "entropy_rebind",
-    "h_tgsd",
-    "h_tgsd_no_sibling_preservation",
-)
+ALLOWED_METHODS = UNLEARNING_METHODS
 METHOD_TO_COMPARISON_MODEL = {
-    "ga_kl": "ga_kl",
-    "h_tgsd": "h_tgsd",
+    **{method: method for method in ALLOWED_METHODS},
     "h_tgsd_no_sibling_preservation": "h_tgsd_no_sibling",
-    "retain_only": "retain_only",
-    "counterfactual_rebind": "counterfactual_rebind",
-    "entropy_rebind": "entropy_rebind",
 }
 MIN_STEPS = 10
 MAX_STEPS = 500
@@ -33,11 +23,8 @@ MAX_STEPS = 500
 @dataclass(frozen=True)
 class CandidateArtifact:
     candidate_id: str
-    class_id: int
     class_name: str
     request_name: str
-    superclass: str
-    sibling_classes: tuple[int, ...]
     method: str
     steps: int
     checkpoint_path: Path
@@ -133,17 +120,68 @@ class ArtifactCatalog:
         is_fresh_job = job_checkpoint is not None and (job_root / "job_result.json").is_file()
         return CandidateArtifact(
             candidate_id=candidate_id,
-            class_id=class_id,
             class_name=request.class_name,
             request_name=request.request_name,
-            superclass=request.superclass,
-            sibling_classes=request.sibling_classes,
             method=method,
             steps=steps,
             checkpoint_path=checkpoint,
             comparison_model=(candidate_id if is_fresh_job else METHOD_TO_COMPARISON_MODEL[method]),
             source="job" if is_fresh_job else "precomputed",
         )
+
+    def persisted_candidate(self, candidate_id: str) -> CandidateArtifact | None:
+        """Resolve a completed interface job after the web process restarts."""
+        import json
+
+        jobs_root = self.output_root / self.dataset_name / "jobs"
+        if not candidate_id or not jobs_root.is_dir():
+            return None
+
+        for result_path in jobs_root.glob("*/job_result.json"):
+            try:
+                payload = json.loads(result_path.read_text(encoding="utf-8"))
+                stored_candidate_id = str(
+                    payload.get("candidate_id", result_path.parent.name)
+                )
+                if stored_candidate_id != candidate_id:
+                    continue
+                class_id, method, steps = validate_job_spec(
+                    class_id=int(payload["class_id"]),
+                    method=str(payload["method"]),
+                    steps=int(payload["steps"]),
+                )
+                request = self.request_for(class_id)
+                actual_identity = {
+                    "class_name": str(payload["class_name"]),
+                    "request_name": str(payload["request_name"]),
+                    "superclass": str(payload["superclass"]),
+                    "sibling_classes": [
+                        int(value) for value in payload["sibling_classes"]
+                    ],
+                }
+            except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+                continue
+
+            expected_identity = {
+                "class_name": request.class_name,
+                "request_name": request.request_name,
+                "superclass": request.superclass,
+                "sibling_classes": list(request.sibling_classes),
+            }
+            if actual_identity != expected_identity:
+                continue
+            candidate = self.precomputed_candidate(
+                class_id=class_id,
+                method=method,
+                steps=steps,
+            )
+            if (
+                candidate is not None
+                and candidate.candidate_id == candidate_id
+                and candidate.source == "job"
+            ):
+                return candidate
+        return None
 
     def comparison_rows(self, request_name: str) -> list[dict[str, str]]:
         if request_name not in self._comparison_cache:
@@ -195,7 +233,7 @@ class ArtifactCatalog:
                 continue
             row = {"model": candidate_id}
             for source_key, display_key in (
-                ("forget_acc", "target_test_acc"),
+                ("target_test_acc", "target_test_acc"),
                 ("test_retain_acc", "retained_test_acc"),
                 ("test_all_acc", "utility_test_all"),
             ):

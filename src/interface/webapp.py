@@ -20,7 +20,7 @@ from .catalog import (
     NUM_CLASSES,
     ArtifactCatalog,
 )
-from .jobs import JobManager, JobRecord, JobStatus
+from .jobs import JobManager, JobRecord
 from .probe_logic import (
     evaluate_comparison,
     find_metric_row,
@@ -231,14 +231,6 @@ def create_app(
         name="static",
     )
 
-    def _require_done_job(job_id: str) -> JobRecord:
-        job = job_manager.get(job_id)
-        if job is None:
-            raise HTTPException(status_code=404, detail="Unknown job id")
-        if job.status is not JobStatus.DONE:
-            raise HTTPException(status_code=409, detail="Job is not complete")
-        return job
-
     def _job_context(job: JobRecord) -> dict:
         return {"job": job.public_dict()}
 
@@ -256,11 +248,9 @@ def create_app(
                 "groups": groups,
                 "methods": [m for m in ALLOWED_METHODS],
                 "step_options": [50, 100, 200, 500],
-                "dataset_name": DATASET_NAME,
                 "num_classes": NUM_CLASSES,
                 "backbone": BACKBONE_NAME,
                 "baseline_ready": baseline is not None,
-                "model_loaded": probe_service.loaded if probe_service else False,
             },
         )
 
@@ -438,16 +428,18 @@ def create_app(
     def _artifact_for_candidate(candidate_id: str):
         job = job_manager.find_completed(candidate_id)
         if job is None:
-            raise KeyError(f"Unknown or incomplete candidate {candidate_id!r}")
+            artifact = catalog.persisted_candidate(candidate_id)
+            if artifact is None:
+                raise KeyError(
+                    f"Unknown or incomplete candidate {candidate_id!r}"
+                )
+            return artifact
         from .catalog import CandidateArtifact
 
         return CandidateArtifact(
             candidate_id=candidate_id,
-            class_id=job.class_id,
             class_name=job.class_name,
             request_name=job.request_name,
-            superclass=job.superclass,
-            sibling_classes=tuple(job.sibling_classes),
             method=job.method,
             steps=job.steps,
             checkpoint_path=Path(job.checkpoint_path),

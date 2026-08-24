@@ -1,279 +1,173 @@
-# Lightweight VLM Machine Unlearning Pipeline
+# UN-ML: CLIP Machine-Unlearning Research Platform
 
-End-to-end project for machine unlearning on a lightweight vision-language model (VLM):
-1. Pull CIFAR-10 or CIFAR-100 and create retain/forget splits.
-2. Fine-tune a lightweight CLIP adapter model.
-3. Unlearn using multiple methods.
-4. Run membership-inference attacks and compare model utility and forget quality.
+UN-ML is a research and demonstration platform for studying machine
+unlearning in CLIP-based image classification. It supports CIFAR-10 and
+CIFAR-100 experiments, parameter-efficient adapters, multiple unlearning
+methods, privacy/utility evaluation, and a FastAPI interface backed by remote
+Modal GPU jobs.
 
-## Why this is novel
-This project includes a new unlearning objective:
-- `counterfactual_rebind`: for forget samples, the model is pushed toward counterfactual class prompts while preserving retain behavior through KL-to-teacher regularization.
-- `h_tgsd`: Hierarchical Text-Guided Semantic Disentanglement suppresses a
-  teacher-derived target semantic subspace while preserving unrelated and
-  sibling-class predictions and representations.
+## Current status
 
-This creates a controllable forgetting mechanism that is stronger than retain-only fine-tuning while preserving utility better than unconstrained gradient ascent.
-H-TGSD is implemented and unit-tested, but its CIFAR-100 advantage remains a
-research hypothesis until the configured GPU experiments are complete.
+Implemented:
 
-## Project structure
-- `src/unml/data.py`: dataset pull + split creation + dataloaders
-- `src/unml/model.py`: frozen CLIP backbone + post-projection adapters or
-  internal vision LoRA
-- `src/unml/train.py`: finetuning pipeline
-- `src/unml/unlearn.py`: unlearning methods
-- `src/unml/disentangle.py`: H-TGSD prototype, basis, and loss functions
-- `src/unml/attacks.py`: membership-inference attacks + tradeoff plot/report
-- `src/unml/probe.py`: sample- and class-level checkpoint inspection
-- `scripts/*.py`: main pipeline/study CLI entrypoints
-- `helpers/*.py`: support CLI entrypoints for cache, preflight, probing,
-  benchmarking, and study summarization
-- `scripts/run_pipeline.py`: full experiment orchestration
+- frozen CLIP backbones with historical post-projection adapters or internal
+  vision LoRA;
+- CIFAR-10/CIFAR-100 retain/forget experiment tooling;
+- `retain_only`, `ga_kl`, `counterfactual_rebind`, `entropy_rebind`, `h_tgsd`,
+  and `h_tgsd_no_sibling_preservation`;
+- hierarchy-aware metrics, membership-inference attacks, retraining-oracle and
+  multi-seed tools, semantic-subspace analysis, and per-image probes;
+- a FastAPI/Jinja2/HTMX interface for selecting any CIFAR-100 target, running a
+  job, polling it, and comparing baseline/unlearned top-five predictions; and
+- asynchronous HMAC-authenticated Modal execution with prepared data/model
+  Volumes and validated safetensors transport.
 
+Not yet complete:
 
-## Tests
+- the target-neutral canonical CIFAR-100 baseline;
+- the 18-template prompt contract and locked LoRA configuration;
+- interruption-safe baseline training and immutable manifest promotion;
+- canonical rose/tulip demonstrations and full comparative evidence;
+- clipboard image paste; and
+- a verified public deployment using the promoted baseline.
+
+The active CIFAR-100 configuration is request-specific and must not be used as
+the permanent baseline. Follow [`docs/PLAN.md`](docs/PLAN.md) before starting
+baseline training.
+
+## Research claim boundary
+
+H-TGSD is designed and implemented. It uses teacher-derived text/image
+directions to suppress target-specific semantic subspaces while preserving
+shared/sibling and unrelated behavior. Its superiority remains a research
+hypothesis until the canonical multi-seed experiments are complete. An image
+probe can illustrate changed behavior; it does not prove deletion.
+
+## Setup
+
+The project uses uv and the checked-in lockfile:
+
 ```bash
+uv sync --locked
 uv run --locked pytest -q
 ```
 
-## Setup
-```bash
-uv sync --locked
-```
+Do not maintain a second pip/`venv/` environment alongside the uv-managed
+`.venv`.
 
-## Config-Driven Run
-
-Select the dataset by changing one field in `config/parameters.yaml`:
-
-```yaml
-data:
-  dataset: cifar10  # change to cifar100
-```
-
-The corresponding profile supplies its forget classes and fraction. CIFAR-10
-uses cat/dog (`3,5`). CIFAR-100 uses five flower classes
-(`54,62,70,82,92`).
-
-The same switch selects the model architecture:
-
-- CIFAR-10: CLIP ViT-B/32 with the historical image/text post-projection
-  adapters.
-- CIFAR-100: CLIP ViT-B/16 with rank-8 LoRA on `q_proj` and `v_proj` in all
-  12 vision blocks (24 adapted projections).
-
-The CIFAR-100 profile keeps the text encoder and original CLIP weights frozen,
-uses BF16 and vision gradient checkpointing, and trains with batch size 64 plus
-two-step accumulation for effective batch size 128.
-
-Its unlearning profile runs the four historical baselines plus `h_tgsd` and
-`h_tgsd_no_sibling_preservation`. CIFAR-10 keeps the historical four-method
-matrix.
-
-The CIFAR-100 profile also enables an exact retained-data retraining oracle.
-After fine-tuning, the pipeline reloads the recorded `base_init.pt`, trains
-only on `retain_train`, and matches the source seed, architecture, optimizer,
-precision, batch/accumulation, optimizer-step count, and cosine schedule.
-Source configuration and checkpoint hashes are validated before model startup.
-
-For CIFAR-100, select the deletion request in the same profile:
-
-```yaml
-data:
-  profiles:
-    cifar100:
-      request: flowers_superclass  # or rose_selective
-```
-
-- `flowers_superclass` forgets all five flower classes.
-- `rose_selective` forgets rose and records the other four flowers as sibling
-  retain classes.
-
-Inspect the resolved run without starting any work:
+## Inspect the current experiment configuration
 
 ```bash
-python scripts/run_pipeline.py --show-config
+uv run --locked python scripts/run_pipeline.py --show-config
 ```
 
-Run the complete configured pipeline:
+At present this resolves to the legacy/request-specific CIFAR-100
+`flowers_superclass` workflow. It is suitable for integration checks and
+historical experiments, not for creating `cifar100_canonical_v1`.
+
+Prepare data and model assets:
 
 ```bash
-python scripts/run_pipeline.py
+uv run --locked python scripts/prepare_data.py --dataset cifar100
+uv run --locked python helpers/cache_model.py --dataset cifar100
 ```
 
-Run only the oracle after a completed fine-tuning run:
+Run the current configured pipeline only after reviewing the warning in the
+[runbook](docs/RUNBOOK.md):
 
 ```bash
-python scripts/train_vlm.py --oracle --offline --device cuda
+uv run --locked python scripts/run_pipeline.py
 ```
 
-Oracle artifacts are isolated under `retrain_oracle/` and are automatically
-included in CIFAR-100 attack evaluation and checkpoint probes.
-
-Before requesting a GPU on Sharanga, populate and verify the Hugging Face
-cache on the login node:
+## Local interface
 
 ```bash
-python helpers/cache_model.py
+uv run --env-file .env unml-interface \
+  --offline \
+  --device cpu \
+  --baseline-checkpoint outputs/cifar100/rose_selective/baseline_2000/checkpoints/finetuned_best.pt
 ```
 
-Run the bounded infrastructure smoke test through a GPU batch job:
+Open <http://127.0.0.1:8000>.
 
-```bash
-python scripts/train_vlm.py --smoke --offline --device cuda
-```
+- With `UNML_MODAL_URL` and `UNML_JOB_SECRET`, jobs dispatch to Modal.
+- Without them, non-hosted mode can run local subprocess jobs.
+- Public deployments must use `--hosted`, which rejects missing remote
+  credentials rather than falling back to CPU unlearning.
+- The current probe accepts uploaded JPEG, PNG, and WebP images. Clipboard
+  paste is planned but not implemented.
 
-Smoke settings are stored under `training.smoke` in
-`config/parameters.yaml`. Smoke artifacts are isolated under
-`phase2_benchmark`, marked as partial, and must not be used as research
-results.
+For the current Modal path, the explicit local baseline must exactly match the
+checkpoint uploaded to the worker. Do not rely on catalog auto-selection: the
+canonical id/hash binding that makes this automatic is still planned work.
+The ignored checkpoint is not included in a clean clone; obtain or reproduce
+the trusted legacy artifact before using this command.
 
-For CIFAR-100, the config also enables the optimized input pipeline:
+Uploaded images are qualitative and may be outside the CIFAR-100 distribution.
+“Relative confidence” is normalized across the fixed candidate labels; it is
+not a calibrated probability.
 
-```yaml
-training:
-  profiles:
-    cifar100:
-      persistent_workers: true
-      non_blocking: true
-  pin_memory: true
-  prefetch_factor: 2
-```
-
-Pinned host buffers and nonblocking CUDA copies can overlap data transfer with
-GPU work. Persistent workers are used only for reusable training loaders;
-evaluation loaders are kept nonpersistent to avoid retaining many worker
-processes. The same controls apply to unlearning and attack evaluation.
-Throughput improvement must be measured on Sharanga before it is reported.
-
-Run the controlled runtime matrix on one A100 after caching the model:
-
-```bash
-python helpers/benchmark_runtime.py \
-  --dataset cifar100 \
-  --request flowers_superclass \
-  --repeats 3
-```
-
-The matrix compares the configured profile, disabled gradient checkpointing,
-synchronous input transfer, and eight workers. Every run uses an isolated
-smoke directory. Raw records and mean/standard-deviation summaries are written
-under `runtime_benchmark/`. The summarizer rejects mixed Git commits, GPU
-models, optimizer-step counts, or processed-example counts.
-
-Artifacts remain isolated:
+## Architecture
 
 ```text
-outputs/
-  cifar10/
-    splits/
-    finetune/
-    unlearning/
-    comparison/
-  cifar100/
-    flowers_superclass/
-      splits/
-      finetune/
-      unlearning/
-      comparison/
-    rose_selective/
-      splits/
-      finetune/
-      unlearning/
-      comparison/
+Browser (HTMX)
+  -> FastAPI job manager
+  -> HMAC-signed Modal endpoint
+  -> detached GPU unlearning call
+  -> validated safetensors adapter
+  -> resident CLIP probe service
+  -> baseline vs candidate predictions
 ```
 
-On Sharanga, `env_activation.sh` supplies `UNML_DATA` and `UNML_OUTPUTS`.
-The same command then reads data and writes all heavy artifacts under scratch.
+See [`docs/flowchart.md`](docs/flowchart.md) for the current flow and planned
+canonical manifest boundary.
 
-CLI arguments remain available as temporary overrides, but normal experiments
-should be defined in `config/parameters.yaml`.
+Core modules:
 
-## Implemented attacks
-- `Confidence MIA`: membership inference using true-label confidence.
-- `Delta-to-Base MIA`: confidence shift from the base adapter model (`current_confidence - base_confidence`).
+- `src/unml/data.py`: datasets, class hierarchy, splits, and loaders;
+- `src/unml/model.py`: CLIP wrapper, adapters, LoRA, and checkpoints;
+- `src/unml/train.py`: current fine-tuning and retraining-oracle loop;
+- `src/unml/unlearn.py`: unlearning execution;
+- `src/unml/methods.py`: method registry and configuration;
+- `src/unml/disentangle.py`: H-TGSD semantic bases and losses;
+- `src/unml/attacks.py`: privacy, utility, and representation evaluation;
+- `src/interface/`: web app, jobs, catalog, remote runner, and probe service;
+- `worker/modal_app.py`: Modal asset preparation and detached GPU endpoint; and
+- `scripts/`: CLI entry points and orchestration.
 
-Forgetting quality combines:
-- Forget-set accuracy drop.
-- Resistance to both attacks (AUC close to 0.5 is better).
+## Artifact boundaries
 
-Evaluation is hierarchy-aware for both datasets. Each candidate is evaluated
-once on the complete test set and once on forget-training samples. The same
-outputs produce:
+Current request-specific outputs live under paths such as:
 
-- target test micro/macro accuracy;
-- sibling test micro/macro accuracy (`N/A` when no sibling group exists);
-- unrelated-retain micro/macro accuracy;
-- overall and retain accuracy;
-- full per-class accuracy and confusion CSVs;
-- a compact target/sibling/unrelated confusion CSV;
-- confidence and delta-to-base MIA.
-
-Delta-MIA scores are aligned by dataset index before subtraction, so shuffled
-forget loaders cannot compare different samples. Base-model outputs are
-computed once and reused across all candidate checkpoints.
-
-H-TGSD builds configurable text/image class directions from the fine-tuned
-teacher. Complete-superclass requests suppress the flower basis. Selective
-requests suppress the target residual orthogonal to the sibling basis while
-preserving shared target/sibling coordinates. Basis tensors, prototype counts,
-ranks, and component losses are saved with the unlearning artifacts.
-
-Manually inspect selected examples across the fine-tuned reference and
-unlearned checkpoints:
-
-```bash
-python helpers/probe_checkpoint.py --offline --device cuda
+```text
+outputs/cifar100/flowers_superclass/
+outputs/cifar100/rose_selective/
+outputs/cifar100/jobs/
 ```
 
-The default test probe selects examples from the configured target classes.
-Use `--class-name rose`, `--class-id 70`, or repeatable `--index` arguments for
-specific checks. With `--source train` and no selector, it samples the exact
-`forget_indices` recorded in the split. Results are written as CSV, JSON,
-Markdown, and optional source images under the request-specific `probes/`
-directory. This is a per-example diagnostic; paper claims still require the
-aggregate evaluation metrics above.
+The planned immutable baseline will live under
+`outputs/cifar100/canonical/`, with a versioned manifest and explicit id/hash.
+Development runs, internal recovery checkpoints, expiring jobs, promoted
+demonstrations, and legacy artifacts must remain distinguishable.
 
-## Unlearning Interface
+## Documentation
 
-The FastAPI interface serves the frozen CIFAR-100 CLIP backbone and lets users
-choose a class, run an unlearning job, and compare top-5 predictions on an
-uploaded image. Uploaded images are exploratory out-of-distribution probes,
-not a replacement for recorded held-out evaluation.
+- [`docs/README.md`](docs/README.md): documentation map and authority rules;
+- [`docs/PLAN.md`](docs/PLAN.md): current architecture decisions and phases;
+- [`docs/PRD.md`](docs/PRD.md): requirements and acceptance evidence;
+- [`docs/RUNBOOK.md`](docs/RUNBOOK.md): verified commands and limitations;
+- [`docs/IDEAS.md`](docs/IDEAS.md): unresolved research/product questions;
+- [`deploy/README.md`](deploy/README.md): Modal/Hugging Face deployment status.
 
-```bash
-uv sync --locked
-uv run helpers/cache_model.py --dataset cifar100
-uv run python scripts/run_interface.py --offline --device cpu
-```
+The local `research/` workspace remains intentionally untracked and is not a
+dependency of the maintained documentation.
 
-Open <http://127.0.0.1:8000>. Local mode runs jobs as subprocesses; public
-deployments must use `--hosted` with the Modal worker credentials.
+## Security and scientific communication
 
-## Notes
-- CIFAR-10 backbone: `openai/clip-vit-base-patch32` (frozen).
-- CIFAR-100 backbone: `openai/clip-vit-base-patch16` with vision-only LoRA.
-- Checkpoints save adapter/LoRA state and configuration, not frozen CLIP
-  weights.
-- CIFAR-100 fine-tuning metrics record runtime, throughput, and peak allocated
-  GPU memory for the required Sharanga benchmark.
-- Split files record the dataset and class vocabulary used by downstream stages.
-- Split/checkpoint dataset mismatches are rejected before an experiment runs.
-- This makes training lightweight and unlearning iterations fast.
-
-# Novel Directions To Explore (this is needs research)
-
-- Hard counterfactual rebind (novel extension): Instead of random y_cf, choose semantically closest competing class by embedding similarity.
-> Hypothesis: more realistic confusion yields stronger and cleaner forgetting.
-- Curriculum counterfactual rebind: Start with easy counterfactual classes, then gradually harder ones.
-> Hypothesis: improves stability and utility retention.
-- Uncertainty-aware rebind: Weight forget samples by confidence or margin. Focus updates on high-memorization points.
-- Prototype-anchored rebind: Add class prototype alignment so forget samples move toward chosen counterfactual prototype.
-- Distribution-preserving rebind: Regularize to preserve retain feature geometry while altering forget regions.
-
-- Disentanglement-Based Unlearning
-1. Split representation into shared and forget-sensitive components.
-2. Train adversary to predict forget attribute from shared part.
-3. Train encoder to remove forget signal from shared part (gradient reversal/adversarial objective).
-4. Use retain supervision + utility constraints so task performance remains.
-5. At unlearning time, damp or reset forget-sensitive branch and rebind through shared branch.
+- Never commit Modal/Hugging Face credentials or HMAC values.
+- Public inputs are allowlisted and bounded; remote adapters use safetensors.
+- Do not deserialize externally influenced pickle checkpoints.
+- Do not compare results whose baseline, split, prompt, adapter schema, or
+  method version differs.
+- Do not describe one changed prediction, target-score suppression, or an
+  implemented hypothesis as proof of selective deletion or method superiority.

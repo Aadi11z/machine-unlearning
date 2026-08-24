@@ -105,6 +105,17 @@ def test_parse_job_response_validates_fields() -> None:
         parse_job_response(json.dumps(bad2).encode())
 
 
+def test_modal_runner_allows_long_running_endpoint(tmp_path: Path) -> None:
+    runner = ModalJobRunner(
+        endpoint_url="https://worker.invalid",
+        secret="test-secret",
+        output_root=tmp_path,
+    )
+
+    assert runner.timeout_s == 4000
+    assert runner.request_timeout_s == 30
+
+
 def _tiny_clip():
     from transformers import CLIPVisionConfig, CLIPTextConfig, CLIPConfig
 
@@ -201,6 +212,35 @@ def test_write_job_artifacts_lands_in_catalog_layout(artifact_env) -> None:
             metrics={},
             wall_time_s=1.0,
         )
+
+
+def test_write_job_artifacts_validates_without_constructing_clip(
+    artifact_env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env = artifact_env
+
+    def fail_if_constructed(*_args, **_kwargs):
+        raise AssertionError("remote validation must not construct LightweightVLM")
+
+    monkeypatch.setattr(
+        "unml.model.LightweightVLM.from_config", fail_if_constructed
+    )
+
+    path = write_job_artifacts(
+        output_root=env.output_root,
+        class_id=70,
+        class_name="rose",
+        request_name="rose_selective",
+        superclass="flowers",
+        sibling_classes=[54, 62, 82, 92],
+        method="h_tgsd",
+        steps=152,
+        checkpoint_bytes=env.checkpoint_bytes,
+        metrics={},
+        wall_time_s=1.0,
+    )
+
+    assert path.is_file()
 
 
 def test_write_job_artifacts_rejects_invalid_adapter_before_persisting(artifact_env) -> None:
@@ -311,6 +351,81 @@ def test_modal_runner_round_trip_against_stub(artifact_env, tmp_path) -> None:
     assert seen["body"] == spec_body
 
 
+def test_modal_runner_polls_detached_function_call(artifact_env) -> None:
+    env = artifact_env
+    secret = "test-secret"
+    responses = [
+        (202, {"status": "accepted", "call_id": "fc-test"}),
+        (202, {"status": "running", "call_id": "fc-test"}),
+        (
+            200,
+            {
+                "checkpoint_b64": encode_checkpoint(env.checkpoint_bytes),
+                "class_id": 70,
+                "class_name": "rose",
+                "request_name": "rose_selective",
+                "superclass": "flowers",
+                "sibling_classes": [54, 62, 82, 92],
+                "method": "ga_kl",
+                "steps": 120,
+                "wall_time_s": 42.0,
+                "metrics": {"forget_acc": 0.0},
+            },
+        ),
+    ]
+    seen_bodies: list[dict] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+            assert verify_signature(secret, body, self.headers.get(SIGNATURE_HEADER))
+            seen_bodies.append(json.loads(body))
+            status, payload = responses.pop(0)
+            encoded = json.dumps(payload).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        runner = ModalJobRunner(
+            endpoint_url=f"http://127.0.0.1:{server.server_port}/",
+            secret=secret,
+            output_root=env.output_root,
+            poll_interval_s=0,
+        )
+        job = JobRecord(
+            job_id="t1",
+            class_id=70,
+            class_name="rose",
+            request_name="rose_selective",
+            superclass="flowers",
+            sibling_classes=[54, 62, 82, 92],
+            method="ga_kl",
+            steps=120,
+            status=JobStatus.RUNNING,
+        )
+        runner(job)
+    finally:
+        server.shutdown()
+
+    assert seen_bodies == [
+        {"class_id": 70, "method": "ga_kl", "steps": 120},
+        {"call_id": "fc-test"},
+        {"call_id": "fc-test"},
+    ]
+    assert job.source == "modal"
+    assert Path(job.checkpoint_path).is_file()
+
+
 def test_modal_runner_rejects_mismatched_response_before_persisting(artifact_env) -> None:
     env = artifact_env
     secret = "test-secret"
@@ -380,7 +495,8 @@ def test_catalog_translates_fresh_job_metrics_without_inventing_breakdowns(tmp_p
                 "request_name": "rose_selective",
                 "result": {
                     "metrics": {
-                        "forget_acc": 0.02,
+                        "forget_acc": 0.91,
+                        "target_test_acc": 0.02,
                         "test_retain_acc": 0.81,
                         "test_all_acc": 0.80,
                     }
@@ -421,7 +537,7 @@ def test_catalog_discovers_job_metrics_added_after_an_initial_lookup(tmp_path) -
             {
                 "candidate_id": "rose_selective_ga_kl_120",
                 "request_name": "rose_selective",
-                "result": {"metrics": {"forget_acc": 0.02}},
+                "result": {"metrics": {"target_test_acc": 0.02}},
             }
         )
     )
@@ -441,7 +557,8 @@ def test_catalog_reads_subprocess_job_result_metrics(tmp_path) -> None:
                 "request_name": "rose_selective",
                 "result": {
                     "checkpoint": "/ignored/checkpoint.pt",
-                    "forget_acc": 0.02,
+                    "forget_acc": 0.91,
+                    "target_test_acc": 0.02,
                     "test_retain_acc": 0.81,
                     "test_all_acc": 0.80,
                 },

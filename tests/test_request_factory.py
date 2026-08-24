@@ -9,6 +9,7 @@ from unml.data import get_dataset_spec, make_splits
 from unml.request_factory import (
     SelectiveRequest,
     list_superclass_groups,
+    prepare_selective_splits,
     resolve_selective_request,
     selective_split_config,
     validate_selective_request,
@@ -140,6 +141,29 @@ def test_superclass_group_listing_is_complete() -> None:
     assert listed == list(range(len(spec.class_names)))
     flowers = next(g for g in groups if g["superclass"] == "flowers")
     assert flowers["class_names"] == ["orchid", "poppy", "rose", "sunflower", "tulip"]
+
+
+def test_prepare_selective_splits_loads_dataset_once(tmp_path, monkeypatch) -> None:
+    calls = []
+    dataset = type("Dataset", (), {"targets": list(range(100))})()
+
+    def fake_load(data_dir, dataset_name, download):
+        calls.append((data_dir, dataset_name, download))
+        return dataset, dataset
+
+    monkeypatch.setattr("unml.request_factory.load_dataset_pair", fake_load)
+    paths = prepare_selective_splits(
+        str(tmp_path / "data"),
+        str(tmp_path / "splits"),
+        forget_fraction=1.0,
+        retain_val_fraction=0.1,
+        seed=42,
+        class_ids=[70, 92],
+    )
+
+    assert calls == [(str(tmp_path / "data"), "cifar100", True)]
+    assert set(paths) == {70, 92}
+    assert all(Path(path).is_file() for path in paths.values())
 
 
 def test_rose_split_artifact_matches_factory_fields() -> None:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from scripts.run_interface import _runner_mode
+from interface.cli import _runner_mode
 
 
 def test_hosted_interface_requires_complete_modal_configuration() -> None:

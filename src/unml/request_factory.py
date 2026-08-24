@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable
 
 from .config import normalize_dataset_name
 from .data import (
     DatasetSpec,
     SplitConfig,
+    build_split_payload,
     download_and_prepare_splits,
     get_dataset_spec,
+    load_dataset_pair,
     validate_hierarchy_request,
 )
+from .utils import save_json
 
 
 @dataclass(frozen=True)
@@ -143,6 +148,49 @@ def build_selective_split(
         superclass=request.superclass,
         sibling_classes=list(request.sibling_classes),
     )
+
+
+def prepare_selective_splits(
+    data_dir: str,
+    split_dir: str,
+    *,
+    forget_fraction: float,
+    retain_val_fraction: float,
+    seed: int,
+    dataset_name: str = "cifar100",
+    class_ids: Iterable[int] | None = None,
+) -> dict[int, str]:
+    """Download a dataset once and persist deterministic splits for its classes."""
+    spec = get_dataset_spec(dataset_name)
+    selected_ids = (
+        list(range(len(spec.class_names)))
+        if class_ids is None
+        else list(class_ids)
+    )
+    requests = [
+        resolve_selective_request(dataset_name, class_id)
+        for class_id in selected_ids
+    ]
+    train_ds, test_ds = load_dataset_pair(data_dir, dataset_name, download=True)
+    output_dir = Path(split_dir)
+    paths: dict[int, str] = {}
+    for request in requests:
+        cfg = selective_split_config(
+            request,
+            forget_fraction=forget_fraction,
+            retain_val_fraction=retain_val_fraction,
+            seed=seed,
+        )
+        payload = build_split_payload(
+            train_ds.targets,
+            test_ds.targets,
+            cfg,
+            dataset_name=dataset_name,
+        )
+        path = output_dir / f"{request.request_name}_split.json"
+        save_json(payload, path)
+        paths[request.class_id] = str(path)
+    return paths
 
 
 def list_superclass_groups(

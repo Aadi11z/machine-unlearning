@@ -26,20 +26,14 @@ from unml.config import (
     resolve_section_value,
     resolve_value,
 )
+from unml.methods import UNLEARNING_METHODS
 from unml.request_factory import (
     SelectiveRequest,
     build_selective_split,
     resolve_selective_request,
 )
 
-JOB_METHODS = (
-    "retain_only",
-    "ga_kl",
-    "counterfactual_rebind",
-    "entropy_rebind",
-    "h_tgsd",
-    "h_tgsd_no_sibling_preservation",
-)
+JOB_METHODS = UNLEARNING_METHODS
 DEFAULT_METHOD = "ga_kl"
 DEFAULT_STEPS = 200
 

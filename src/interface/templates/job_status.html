@@ -2,14 +2,14 @@
 <div class="banner bad-banner" role="alert">{{ error }}</div>
 {% elif job.status == "done" %}
 <div class="banner ok-banner" data-candidate-id="{{ job.candidate_id }}" id="job-done">
-  <strong>&check; Done — “{{ job.class_name }}” unlearned.</strong>
+  <strong>&check; Done — candidate checkpoint ready.</strong>
   <span class="muted">{{ job.method }} · {{ job.steps }} steps ·
     {% if job.source == "precomputed" %}restored from the completed experiment{% else %}fresh job ({{ "%.1f"|format(job.wall_time_s) }}s){% endif %}
   </span>
   <p class="muted">Sibling classes watched in the same group:
     {% for sib in job.sibling_classes %}<code>{{ sib }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
   </p>
-  <p>Scroll to step 3 and upload an image to test it.</p>
+  <p>Scroll to step 3 and upload an image for a qualitative comparison.</p>
 </div>
 {% elif job.status == "failed" %}
 <div class="banner bad-banner" role="alert">
