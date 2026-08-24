@@ -7,15 +7,19 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     exit 1
 fi
 
-if [[ -d "${HOME}/.local/bin" ]]; then
-    export PATH="${HOME}/.local/bin:${PATH}"
-fi
+SCRATCH_PROJECT="${SCRATCH_PROJECT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+
+for UV_BIN_DIR in "${HOME}/.local/bin" "$SCRATCH_PROJECT/.local/bin"; do
+    if [[ -d "$UV_BIN_DIR" ]]; then
+        export PATH="$UV_BIN_DIR:$PATH"
+    fi
+done
+
 if ! command -v uv >/dev/null 2>&1; then
     echo "[ERROR] uv is required but was not found on PATH" >&2
+    echo "Install it under \$SCRATCH_PROJECT/.local/bin when home quota is full." >&2
     return 1
 fi
-
-SCRATCH_PROJECT="${SCRATCH_PROJECT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 PROJECT_ENV="${UV_PROJECT_ENVIRONMENT:-$SCRATCH_PROJECT/.venv}"
 
 if [[ ! -d "$PROJECT_ENV" ]]; then
