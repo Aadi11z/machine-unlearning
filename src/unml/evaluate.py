@@ -91,6 +91,26 @@ def evaluate_classification(
         "n": float(total),
     }
 
+@torch.no_grad()
+def evaluate_zero_shot(
+    model,
+    loader: DataLoader,
+    class_text_inputs: Dict[str, torch.Tensor] | PromptEnsembleInputs,
+    device: torch.device,
+    *,
+    max_batches: int | None = None,
+    non_blocking: bool = False,
+) -> Dict[str, float]:
+    """Evaluate an unadapted CLIP model with the resolved text contract."""
+    return evaluate_classification(
+        model,
+        loader,
+        class_text_inputs,
+        device,
+        max_batches=max_batches,
+        non_blocking=non_blocking,
+    )
+
 
 @torch.no_grad()
 def collect_classification_outputs(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import torch
 
 from unml.train import _evaluate_all
+from unml.evaluate import evaluate_zero_shot
 
 
 class EvalModel:
@@ -71,3 +72,17 @@ def test_pilot_evaluation_does_not_touch_test_loaders() -> None:
     assert metrics["retain_val_acc"] == 1.0
     assert metrics["retain_val_macro_accuracy"] == 1.0
     assert metrics["retain_val_loss"] > 0.0
+
+
+def test_zero_shot_evaluation_uses_validation_contract() -> None:
+    metrics = evaluate_zero_shot(
+        EvalModel(),
+        [_batch(0, 0)],
+        {
+            "input_ids": torch.ones((2, 3), dtype=torch.long),
+            "attention_mask": torch.ones((2, 3), dtype=torch.long),
+        },
+        torch.device("cpu"),
+    )
+    assert metrics["accuracy"] == 1.0
+    assert metrics["macro_accuracy"] == 1.0
