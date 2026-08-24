@@ -4,7 +4,7 @@ import os
 import math
 import time
 import hashlib
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, Mapping
 
@@ -472,9 +472,22 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
     setup_seconds = time.perf_counter() - run_started
 
     model.clip.eval()
-    class_text_inputs = {
-        key: value.to(device) for key, value in class_text_inputs.items()
-    }
+    if hasattr(class_text_inputs, "input_ids"):
+        class_text_inputs = replace(
+            class_text_inputs,
+            input_ids=class_text_inputs.input_ids.to(device),
+            attention_mask=class_text_inputs.attention_mask.to(device),
+        )
+    else:
+        class_text_inputs = {
+            key: value.to(device) for key, value in class_text_inputs.items()
+        }
+    prompt_input_ids = class_text_inputs.input_ids if hasattr(
+        class_text_inputs, "input_ids"
+    ) else class_text_inputs["input_ids"]
+    prompt_attention_mask = class_text_inputs.attention_mask if hasattr(
+        class_text_inputs, "attention_mask"
+    ) else class_text_inputs["attention_mask"]
     cached_train_text_features = None
     if model.can_cache_text_features_during_training():
         model.eval()
@@ -529,6 +542,7 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
         gradient_accumulation_steps=cfg.gradient_accumulation_steps,
         epochs=cfg.epochs,
         max_train_steps=cfg.max_train_steps,
+        target_optimizer_steps=cfg.target_optimizer_steps,
         target_scheduler_steps=cfg.target_scheduler_steps,
     )
     warmup_steps = int(scheduler_total_steps * cfg.warmup_fraction)
@@ -600,8 +614,8 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
                 if cached_train_text_features is None:
                     logits = model.class_logits(
                         pixel_values=batch["pixel_values"],
-                        class_input_ids=class_text_inputs["input_ids"],
-                        class_attention_mask=class_text_inputs["attention_mask"],
+                        class_input_ids=prompt_input_ids,
+                        class_attention_mask=prompt_attention_mask,
                     )
                 else:
                     logits = model.class_logits_from_text_features(
