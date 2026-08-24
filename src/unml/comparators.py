@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+import torch
+import torch.nn as nn
 
 COMPARATOR_SCHEMA = "unml-comparator-v1"
 
@@ -60,6 +62,54 @@ COMPARATOR_SPECS: tuple[ComparatorSpec, ...] = (
         "Can LoRA adaptation strength trade off utility and forgetting?",
     ),
 )
+
+
+class LinearProbe(nn.Module):
+    """A standalone classifier head over frozen CLIP image features."""
+
+    def __init__(self, feature_dim: int, class_count: int) -> None:
+        super().__init__()
+        self.classifier = nn.Linear(feature_dim, class_count)
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        return self.classifier(features)
+
+
+def fit_linear_probe(
+    train_features: torch.Tensor,
+    train_labels: torch.Tensor,
+    val_features: torch.Tensor,
+    val_labels: torch.Tensor,
+    *,
+    steps: int = 500,
+    lr: float = 1e-2,
+    weight_decay: float = 1e-4,
+) -> tuple[LinearProbe, dict[str, float]]:
+    if train_features.ndim != 2 or val_features.ndim != 2:
+        raise ValueError("Linear-probe features must be rank-2 tensors")
+    if train_features.shape[1] != val_features.shape[1]:
+        raise ValueError("Train and validation feature dimensions differ")
+    if steps < 1:
+        raise ValueError("Linear-probe steps must be positive")
+    class_count = int(torch.max(train_labels).item()) + 1
+    probe = LinearProbe(int(train_features.shape[1]), class_count)
+    optimizer = torch.optim.AdamW(
+        probe.parameters(), lr=lr, weight_decay=weight_decay
+    )
+    for _ in range(steps):
+        optimizer.zero_grad(set_to_none=True)
+        loss = nn.functional.cross_entropy(probe(train_features), train_labels)
+        loss.backward()
+        optimizer.step()
+    with torch.no_grad():
+        val_logits = probe(val_features)
+        val_loss = nn.functional.cross_entropy(val_logits, val_labels)
+        val_accuracy = (val_logits.argmax(dim=1) == val_labels).float().mean()
+    return probe, {
+        "validation_loss": float(val_loss.item()),
+        "validation_accuracy": float(val_accuracy.item()),
+    }
+
 
 
 def comparator_spec(comparator_id: str) -> ComparatorSpec:

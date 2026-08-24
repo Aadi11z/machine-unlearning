@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import pytest
+import torch
 
 from unml.comparators import (
     COMPARATOR_SPECS,
     comparator_manifest_metadata,
     comparator_spec,
+    fit_linear_probe,
     validate_comparison,
 )
 
@@ -39,3 +41,18 @@ def test_comparison_rejects_unlearning_capability_mismatch() -> None:
             {**common, "comparator_id": "cifar100_lora_delta_interp_v1"},
             {**common, "comparator_id": "cifar100_linear_probe_v1"},
         )
+
+def test_linear_probe_fits_frozen_features() -> None:
+    train_features = torch.tensor(
+        [[2.0, 0.0], [1.5, 0.0], [0.0, 2.0], [0.0, 1.5]]
+    )
+    train_labels = torch.tensor([0, 0, 1, 1])
+    probe, metrics = fit_linear_probe(
+        train_features,
+        train_labels,
+        train_features,
+        train_labels,
+        steps=100,
+    )
+    assert isinstance(probe, torch.nn.Module)
+    assert metrics["validation_accuracy"] >= 0.99
