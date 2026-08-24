@@ -29,6 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--precision", choices=("fp32", "fp16", "bf16"), default="bf16"
     )
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--report-path", required=True)
     parser.add_argument("--local-files-only", action="store_true")
     return parser.parse_args()
