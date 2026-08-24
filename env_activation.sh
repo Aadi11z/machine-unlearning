@@ -7,6 +7,9 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     exit 1
 fi
 
+if [[ -d "${HOME}/.local/bin" ]]; then
+    export PATH="${HOME}/.local/bin:${PATH}"
+fi
 if ! command -v uv >/dev/null 2>&1; then
     echo "[ERROR] uv is required but was not found on PATH" >&2
     return 1
