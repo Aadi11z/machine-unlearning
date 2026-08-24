@@ -77,9 +77,11 @@
       <input type="hidden" name="candidate_id" id="candidate-id-input" value="">
       <div class="run-row">
         <input type="file" name="image" accept="image/*" required>
+        <button type="button" id="paste-image" class="secondary">Paste image</button>
         <input type="text" name="retained_label" placeholder="Optional retained subject (e.g. woman)">
         <button type="submit" class="primary">Compare</button>
       </div>
+      <p class="muted" id="paste-note">Choose an image or paste one from the clipboard.</p>
     </form>
     <div id="probe-result"></div>
   </section>
@@ -95,6 +97,32 @@ function pickClass(name) {
   document.getElementById('picked-note').textContent =
     'Selected: ' + name + ' — press “Forget it” to run the job.';
 }
+function setClipboardImage(file) {
+  const transfer = new DataTransfer();
+  transfer.items.add(file);
+  document.querySelector('input[name="image"]').files = transfer.files;
+  document.getElementById('paste-note').textContent = 'Clipboard image ready.';
+}
+document.getElementById('paste-image').addEventListener('click', async function () {
+  try {
+    const items = await navigator.clipboard.read();
+    const imageItem = items.find(item => item.types.some(type => type.startsWith('image/')));
+    if (!imageItem) throw new Error('No image in clipboard');
+    const type = imageItem.types.find(value => value.startsWith('image/'));
+    const blob = await imageItem.getType(type);
+    setClipboardImage(new File([blob], 'clipboard-image.' + type.split('/')[1], {type}));
+  } catch (error) {
+    document.getElementById('paste-note').textContent =
+      'Clipboard access failed. Use the file picker or paste with ⌘/Ctrl-V.';
+  }
+});
+document.addEventListener('paste', function (event) {
+  const image = [...event.clipboardData.items].find(item => item.type.startsWith('image/'));
+  if (image) {
+    const file = image.getAsFile();
+    if (file) setClipboardImage(file);
+  }
+});
 document.addEventListener('htmx:afterSwap', function (event) {
   const marker = document.querySelector('#job-panel [data-candidate-id]');
   if (marker) {
