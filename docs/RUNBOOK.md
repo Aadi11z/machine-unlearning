@@ -301,9 +301,11 @@ supersedes them; first determine whether they are required for reproducibility.
 
 ## 12. Sharanga and SLURM status
 
-The checked-in `env_activation.sh` and several `src/hpc/*.slurm` files still
-contain CIFAR-10-era flat paths or request-specific assumptions. They are not
-the production canonical-baseline entry point required by PLAN Phase 0B.
+The checked-in `env_activation.sh` now activates the locked `.venv` created by
+`uv sync --locked` and sets project-local uv/Hugging Face caches. Several
+`src/hpc/*.slurm` files still contain CIFAR-10-era flat paths or
+request-specific assumptions. Those wrappers are not the production
+canonical-baseline entry point required by PLAN Phase 0B.
 
 Before canonical cluster training:
 

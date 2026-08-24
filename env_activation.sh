@@ -1,41 +1,47 @@
 #!/usr/bin/env bash
 # Run with: source env_activation.sh
-# Need to run before any session
+# The project environment is created and locked by: uv sync --locked
 
-SCRATCH_PROJECT="${SCRATCH_PROJECT:-/<dummy>/<path>}"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    echo "[ERROR] Source this file: source env_activation.sh" >&2
+    exit 1
+fi
 
-# Deactivate the default env and activate project specific env
+if ! command -v uv >/dev/null 2>&1; then
+    echo "[ERROR] uv is required but was not found on PATH" >&2
+    return 1
+fi
+
+SCRATCH_PROJECT="${SCRATCH_PROJECT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+PROJECT_ENV="${UV_PROJECT_ENVIRONMENT:-$SCRATCH_PROJECT/.venv}"
+
+if [[ ! -d "$PROJECT_ENV" ]]; then
+    echo "[ERROR] uv environment not found at $PROJECT_ENV" >&2
+    echo "Run: cd $SCRATCH_PROJECT && uv sync --locked" >&2
+    return 1
+fi
+
 if [[ "${CONDA_DEFAULT_ENV:-}" == "base" ]]; then
     conda deactivate
 fi
 
-# Activate Venv
-if [[ ! -d "$SCRATCH_PROJECT/unml-env" ]]; then
-    echo "[ERROR] venv not found at $SCRATCH_PROJECT/unml-env"
-    echo "Create it with: python3 -m venv $SCRATCH_PROJECT/unml-env"
-    return 1
-fi
-source "$SCRATCH_PROJECT/unml-env/bin/activate"
+# Activate the uv-managed environment for tools that require an active venv.
+source "$PROJECT_ENV/bin/activate"
+export UV_PROJECT_ENVIRONMENT="$PROJECT_ENV"
 
-# Set Cache dirs
-export PIP_CACHE_DIR="$SCRATCH_PROJECT/.pip-cache"
-export HF_HOME="$SCRATCH_PROJECT/huggingface_cache"
+# Keep caches and writable experiment artifacts on the project filesystem.
+export UV_CACHE_DIR="${UV_CACHE_DIR:-$SCRATCH_PROJECT/.uv-cache}"
+export HF_HOME="${HF_HOME:-$SCRATCH_PROJECT/huggingface_cache}"
+export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-$HF_HOME/transformers}"
 
-# Uncomment if you need to create
-# mkdir -p "$SCRATCH_PROJECT/.pip-cache"
-# mkdir -p "$SCRATCH_PROJECT/huggingface_cache"
-# mkdir -p "$SCRATCH_PROJECT/data"
-# mkdir -p "$SCRATCH_PROJECT/outputs"
+export UNML_DATA="${UNML_DATA:-$SCRATCH_PROJECT/data}"
+export UNML_OUTPUTS="${UNML_OUTPUTS:-$SCRATCH_PROJECT/outputs}"
+export UNML_SPLIT="${UNML_SPLIT:-$UNML_OUTPUTS/cifar100/canonical/development/splits/cifar100_canonical_development_v1.json}"
+export UNML_BEST_CKPT="${UNML_BEST_CKPT:-$UNML_OUTPUTS/cifar100/canonical/cifar100_canonical_v1/checkpoints/finetuned_best.pt}"
 
-# Set Dataset path, Outputs path, and Splits Location
-export UNML_DATA="$SCRATCH_PROJECT/data"
-export UNML_OUTPUTS="$SCRATCH_PROJECT/outputs"
-export UNML_SPLIT="$SCRATCH_PROJECT/outputs/cifar10/splits/cifar10_split.json"
-export UNML_BEST_CKPT="$SCRATCH_PROJECT/outputs/cifar10/finetune/checkpoints/finetuned_best.pt"
-
-echo "✓ venv Activated: $SCRATCH_PROJECT/unml-env"
-echo "✓ PIP_CACHE_DIR: $PIP_CACHE_DIR"
-echo "✓ HF_HOME: $HF_HOME"
+echo "uv environment activated: $PROJECT_ENV"
+echo "UV_CACHE_DIR: $UV_CACHE_DIR"
+echo "HF_HOME: $HF_HOME"
 echo ""
 echo "Convenience vars:"
 echo "  UNML_DATA = $UNML_DATA"
