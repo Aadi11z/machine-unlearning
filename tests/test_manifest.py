@@ -6,6 +6,7 @@ import pytest
 
 from unml.manifest import (
     build_baseline_manifest,
+    validate_baseline_identity,
     verify_manifest_artifacts,
     write_baseline_manifest,
 )
@@ -48,3 +49,25 @@ def test_manifest_rejects_missing_required_fields(tmp_path) -> None:
     del broken["prompt_contract"]
     with pytest.raises(ValueError, match="missing fields"):
         write_baseline_manifest(tmp_path / "broken.json", broken)
+
+def test_manifest_identity_requires_id_and_checkpoint_digest(tmp_path) -> None:
+    checkpoint = tmp_path / "checkpoint.bin"
+    checkpoint.write_bytes(b"checkpoint")
+    manifest = build_baseline_manifest(
+        baseline_id="canonical",
+        dataset="cifar100",
+        split={},
+        model_config={},
+        prompt_contract={},
+        checkpoints={"best": checkpoint},
+        metrics={},
+    )
+    validate_baseline_identity(
+        manifest,
+        baseline_id="canonical",
+        checkpoint_path=checkpoint,
+    )
+    with pytest.raises(ValueError, match="id mismatch"):
+        validate_baseline_identity(
+            manifest, baseline_id="wrong", checkpoint_path=checkpoint
+        )

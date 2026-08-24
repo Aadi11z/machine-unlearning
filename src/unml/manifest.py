@@ -127,3 +127,28 @@ def write_baseline_manifest(path: str | Path, manifest: Mapping[str, Any]) -> Pa
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
+
+
+def validate_baseline_identity(
+    manifest: Mapping[str, Any],
+    *,
+    baseline_id: str,
+    checkpoint_path: str | Path,
+) -> None:
+    """Require consumers to use the exact promoted id and checkpoint digest."""
+    validate_baseline_manifest(manifest)
+    if manifest["baseline_id"] != baseline_id:
+        raise ValueError(
+            f"Baseline id mismatch: expected {manifest['baseline_id']!r}, "
+            f"received {baseline_id!r}"
+        )
+    checkpoint_record = manifest["artifacts"].get("checkpoint") or manifest[
+        "artifacts"
+    ].get("best")
+    if not isinstance(checkpoint_record, Mapping):
+        raise ValueError("Baseline manifest lacks a checkpoint artifact")
+    actual_digest = sha256_file(checkpoint_path)
+    if actual_digest != checkpoint_record.get("sha256"):
+        raise ValueError(
+            f"Baseline checkpoint digest mismatch for {checkpoint_path}"
+        )
