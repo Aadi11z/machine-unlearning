@@ -14,6 +14,7 @@ SCRIPTS = [
     "scripts/run_study.py",
     "helpers/benchmark_runtime.py",
     "helpers/probe_checkpoint.py",
+    "helpers/sweep_finetune.py",
     "scripts/prepare_data.py",
     "scripts/train_vlm.py",
     "scripts/run_unlearning.py",

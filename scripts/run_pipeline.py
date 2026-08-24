@@ -26,6 +26,7 @@ from unml.config import (
     resolve_section_value,
     resolve_value,
 )
+from unml.methods import H_TGSD_METHODS
 from unml.pipeline import run_pipeline_stage
 
 
@@ -324,6 +325,11 @@ def main() -> None:
             "--device",
             device,
     ]
+    recovery_checkpoint = finetune_dir / "checkpoints" / "recovery_latest.pt"
+    finetune_inputs: list[str | Path] = [split_path]
+    if args.resume and recovery_checkpoint.is_file():
+        finetune_command.extend(["--resume-checkpoint", str(recovery_checkpoint)])
+        finetune_inputs.append(recovery_checkpoint)
 
     finetuned_ckpt = finetune_dir / "checkpoints" / "finetuned_best.pt"
     base_ckpt = finetune_dir / "checkpoints" / "base_init.pt"
@@ -332,7 +338,7 @@ def main() -> None:
         StageSpec(
             "finetune",
             finetune_command,
-            [split_path],
+            finetune_inputs,
             [base_ckpt, finetuned_ckpt, finetune_metrics],
         )
     )
@@ -394,7 +400,7 @@ def main() -> None:
             unlearn_ckpt,
             unlearn_metrics,
         ]
-        if method in {"h_tgsd", "h_tgsd_no_sibling_preservation"}:
+        if method in H_TGSD_METHODS:
             unlearn_outputs.append(
                 unlearn_dir / "metrics" / f"{method}_basis.pt"
             )
@@ -497,7 +503,7 @@ def main() -> None:
         compare_dir / "behavioral_tradeoff.png",
         compare_dir / "plot_manifest.json",
     ]
-    if any(method in {"h_tgsd", "h_tgsd_no_sibling_preservation"} for method in methods):
+    if any(method in H_TGSD_METHODS for method in methods):
         evaluation_outputs.append(compare_dir / "semantic_subspace.png")
     run_stage(
         StageSpec(

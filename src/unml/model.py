@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from contextlib import nullcontext
+import os
 from pathlib import Path
+import random
+import tempfile
 from typing import Any, Dict, Iterable, Mapping, Sequence, Tuple
 
 import torch
@@ -345,6 +348,109 @@ def _adapter_state_dict(model: LightweightVLM) -> Dict[str, torch.Tensor]:
     }
     state["logit_scale"] = model.logit_scale.detach().cpu().clone()
     return state
+def _atomic_torch_save(payload: Dict, path: str | Path) -> None:
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            torch.save(payload, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, destination)
+        directory_fd = os.open(destination.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except BaseException:
+        temporary_path.unlink(missing_ok=True)
+        raise
+
+
+RECOVERY_CHECKPOINT_SCHEMA = "unml-recovery-v1"
+
+
+def capture_rng_state() -> dict[str, Any]:
+    state: dict[str, Any] = {
+        "python": random.getstate(),
+        "torch_cpu": torch.get_rng_state(),
+    }
+    try:
+        import numpy as np
+
+        state["numpy"] = np.random.get_state()
+    except ImportError:
+        pass
+    if torch.cuda.is_available():
+        state["torch_cuda"] = torch.cuda.get_rng_state_all()
+    return state
+
+
+def restore_rng_state(state: Mapping[str, Any]) -> None:
+    random.setstate(state["python"])
+    torch.set_rng_state(state["torch_cpu"])
+    if "numpy" in state:
+        import numpy as np
+
+        np.random.set_state(state["numpy"])
+    if "torch_cuda" in state and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all(state["torch_cuda"])
+
+
+def save_recovery_checkpoint(
+    path: str | Path,
+    *,
+    model: LightweightVLM,
+    optimizer: torch.optim.Optimizer,
+    scheduler: Any,
+    scaler: Any | None,
+    epoch: int,
+    global_step: int,
+    metrics: Mapping[str, Any],
+    provenance: Mapping[str, Any],
+) -> None:
+    """Atomically persist the complete epoch-boundary recovery state."""
+    payload = {
+        "schema": RECOVERY_CHECKPOINT_SCHEMA,
+        "model_config": asdict(model.cfg),
+        "adapter_state_dict": _adapter_state_dict(model),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict(),
+        "scaler_state_dict": scaler.state_dict() if scaler is not None else None,
+        "rng_state": capture_rng_state(),
+        "epoch": int(epoch),
+        "global_step": int(global_step),
+        "metrics": dict(metrics),
+        "provenance": dict(provenance),
+    }
+    _atomic_torch_save(payload, path)
+
+
+def load_recovery_checkpoint(
+    path: str | Path,
+    *,
+    model: LightweightVLM,
+    optimizer: torch.optim.Optimizer,
+    scheduler: Any,
+    scaler: Any | None,
+) -> dict[str, Any]:
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    if payload.get("schema") != RECOVERY_CHECKPOINT_SCHEMA:
+        raise ValueError(f"Unsupported recovery checkpoint schema: {path}")
+    validate_adapter_state(payload["adapter_state_dict"], _adapter_state_dict(model))
+    model.load_state_dict(payload["adapter_state_dict"], strict=False)
+    optimizer.load_state_dict(payload["optimizer_state_dict"])
+    scheduler.load_state_dict(payload["scheduler_state_dict"])
+    if scaler is not None and payload.get("scaler_state_dict") is not None:
+        scaler.load_state_dict(payload["scaler_state_dict"])
+    restore_rng_state(payload["rng_state"])
+    return payload
+
+
 
 
 def save_checkpoint(
@@ -357,15 +463,14 @@ def save_checkpoint(
     }
     if extra:
         payload["extra"] = extra
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    torch.save(payload, path)
+    _atomic_torch_save(payload, path)
 
 
 def update_checkpoint_extra(path: str, updates: Dict) -> None:
     payload = torch.load(path, map_location="cpu", weights_only=False)
     extra = payload.setdefault("extra", {})
     extra.update(updates)
-    torch.save(payload, path)
+    _atomic_torch_save(payload, path)
 
 
 def read_checkpoint_payload(
@@ -462,8 +567,15 @@ def validate_adapter_payload(
     *,
     source: str = "checkpoint",
     expected_model_name: str | None = None,
+    expected_adapter_state: Mapping[str, torch.Tensor] | None = None,
 ) -> None:
-    """Validate a delta-only checkpoint against the loaded reference model."""
+    """Validate checkpoint metadata and, optionally, its exact tensor contract.
+
+    ``expected_adapter_state`` is intentionally a mapping rather than a model so
+    callers that receive an untrusted payload can reject it without creating a
+    second frozen CLIP backbone.  Supplying it also makes this a complete
+    pre-mutation validation boundary for hot-swaps.
+    """
     cfg_payload = payload.get("model_config")
     if not isinstance(cfg_payload, Mapping):
         raise ValueError(f"Checkpoint {source!r} is missing model_config")
@@ -505,14 +617,12 @@ def validate_adapter_payload(
             f"Checkpoint {source!r} architecture differs from the active model: "
             + "; ".join(mismatches)
         )
+    if expected_adapter_state is not None:
+        validate_adapter_state(adapter_state, expected_adapter_state)
 
 
-def apply_adapter_state(model: LightweightVLM, adapter_state: Mapping[str, Any]) -> None:
-    """Copy trainable adapter weights onto an already-built model in place.
-
-    The complete adapter contract is verified before any tensor is copied so a
-    rejected payload cannot leave the live model partially mutated.
-    """
+def _expected_adapter_state(model: LightweightVLM) -> dict[str, torch.Tensor]:
+    """Return the complete adapter keys accepted by a live model."""
     model_state = model.state_dict()
     expected_keys = {
         name for name, param in model.named_parameters() if param.requires_grad
@@ -520,13 +630,19 @@ def apply_adapter_state(model: LightweightVLM, adapter_state: Mapping[str, Any])
     # Checkpoints always carry this scalar, even when it was frozen during
     # training, so a hot-swap must replace it rather than retain a stale value.
     expected_keys.add("logit_scale")
+    return {key: model_state[key] for key in expected_keys}
 
+
+def validate_adapter_state(
+    adapter_state: Mapping[str, Any],
+    expected_state: Mapping[str, torch.Tensor],
+) -> None:
+    """Require an exact adapter tensor contract without constructing a model."""
+    expected_keys = set(expected_state)
     received_keys = set(adapter_state)
     unexpected = sorted(received_keys - expected_keys)
     if unexpected:
-        raise ValueError(
-            f"Adapter state contains unexpected keys: {unexpected}"
-        )
+        raise ValueError(f"Adapter state contains unexpected keys: {unexpected}")
     missing = sorted(expected_keys - received_keys)
     if missing:
         raise ValueError(f"Adapter state is missing expected keys: {missing}")
@@ -534,7 +650,11 @@ def apply_adapter_state(model: LightweightVLM, adapter_state: Mapping[str, Any])
     invalid_tensors = []
     for key in sorted(expected_keys):
         value = adapter_state[key]
-        expected = model_state[key]
+        expected = expected_state[key]
+        if not isinstance(expected, torch.Tensor):
+            raise ValueError(
+                f"Expected adapter state contains a non-tensor for key: {key}"
+            )
         if not isinstance(value, torch.Tensor):
             invalid_tensors.append(f"{key}: expected a tensor")
         elif value.shape != expected.shape:
@@ -551,6 +671,15 @@ def apply_adapter_state(model: LightweightVLM, adapter_state: Mapping[str, Any])
             + "; ".join(invalid_tensors)
         )
 
+
+def apply_adapter_state(model: LightweightVLM, adapter_state: Mapping[str, Any]) -> None:
+    """Copy trainable adapter weights onto an already-built model in place.
+
+    The complete adapter contract is verified before any tensor is copied so a
+    rejected payload cannot leave the live model partially mutated.
+    """
+    validate_adapter_state(adapter_state, _expected_adapter_state(model))
+
     model.load_state_dict(dict(adapter_state), strict=False)
 
 
@@ -562,8 +691,12 @@ def load_checkpoint(
     model = LightweightVLM.from_config(cfg)
 
     if "adapter_state_dict" in payload:
+        adapter_state = payload["adapter_state_dict"]
+        if not isinstance(adapter_state, Mapping):
+            raise ValueError(f"Checkpoint {path!r} adapter_state_dict is not a mapping")
+        validate_adapter_state(adapter_state, _expected_adapter_state(model))
         incompatible = model.load_state_dict(
-            payload["adapter_state_dict"], strict=False
+            dict(adapter_state), strict=False
         )
         unexpected = list(incompatible.unexpected_keys)
         if unexpected:

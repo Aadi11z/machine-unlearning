@@ -11,6 +11,8 @@ from typing import Any, Mapping
 
 import torch
 
+from .canonical_split import load_canonical_cifar100_split
+from .manifest import verify_manifest_artifacts
 from .utils import git_commit
 
 
@@ -163,3 +165,40 @@ def validate_scratch_layout(
             f"{outside}"
         )
     return root
+
+
+def validate_production_preflight(
+    *,
+    dataset_name: str,
+    split_path: str | Path,
+    output_dir: str | Path,
+    precision: str,
+    require_cuda: bool = True,
+    manifest_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Validate immutable inputs before a production training launch."""
+    output = validate_writable_directory(output_dir)
+    device = validate_cuda(require_cuda=require_cuda, precision=precision)
+    normalized = dataset_name.strip().lower().replace("-", "").replace("_", "")
+    split = None
+    if normalized == "cifar100":
+        split = load_canonical_cifar100_split(split_path)
+        if split.get("split_id") != "cifar100_canonical_development_v1":
+            raise ValueError("Production CIFAR-100 runs require the canonical split")
+    elif not Path(split_path).is_file():
+        raise FileNotFoundError(f"Training split does not exist: {split_path}")
+    if manifest_path is not None:
+        manifest = Path(manifest_path)
+        if not manifest.is_file():
+            raise FileNotFoundError(f"Baseline manifest does not exist: {manifest}")
+        import json
+
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        verify_manifest_artifacts(payload, root=manifest.parent)
+    return {
+        "dataset": normalized,
+        "split_id": split.get("split_id") if split else None,
+        "output_dir": str(output),
+        "device": device,
+        "manifest": str(manifest_path) if manifest_path else None,
+    }

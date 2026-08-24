@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import random
+from types import SimpleNamespace
 
 import pytest
 import torch
 
 from unml.unlearn import (
     UnlearnConfig,
+    _eval_snapshot,
     _kl_div,
     _sample_counterfactual,
     _validate_h_tgsd_config,
@@ -31,6 +33,46 @@ def test_kl_div_is_near_zero_for_identical_logits() -> None:
     logits = torch.randn(6, 10)
     kl = _kl_div(logits, logits, temperature=1.5)
     assert float(kl.item()) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_eval_snapshot_keeps_train_forget_and_held_out_target_separate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loaders = {
+        name: object()
+        for name in (
+            "retain_train",
+            "retain_val",
+            "forget",
+            "test_forget",
+            "test_retain",
+            "test_all",
+        )
+    }
+    accuracies = {
+        id(loader): accuracy
+        for loader, accuracy in zip(
+            loaders.values(), (0.9, 0.8, 0.1, 0.2, 0.7, 0.6)
+        )
+    }
+    monkeypatch.setattr(
+        "unml.unlearn.build_class_text_features",
+        lambda *_args, **_kwargs: torch.zeros(1),
+    )
+    monkeypatch.setattr(
+        "unml.unlearn.evaluate_classification",
+        lambda _model, loader, **_kwargs: {"accuracy": accuracies[id(loader)]},
+    )
+
+    metrics = _eval_snapshot(
+        SimpleNamespace(eval=lambda: None),
+        loaders,
+        {},
+        torch.device("cpu"),
+    )
+
+    assert metrics["forget_acc"] == 0.1
+    assert metrics["target_test_acc"] == 0.2
 
 
 def test_run_unlearning_rejects_unsupported_method(tmp_path) -> None:

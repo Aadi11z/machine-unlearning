@@ -6,14 +6,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-import pandas as pd
 import torch
 from torch.utils.data import Dataset
 from transformers import CLIPImageProcessor, CLIPTokenizer
 
 from .data import (
     CLIPCollator,
-    build_text_inputs,
+    build_canonical_prompt_inputs,
     load_dataset_pair,
     load_split_metadata,
     validate_checkpoint_dataset,
@@ -91,13 +90,14 @@ def load_image_checkpoint_predictor(
         model_name,
         local_files_only=local_files_only or transformers_offline(),
     )
-    class_text_inputs = build_text_inputs(
+    class_text_inputs = build_canonical_prompt_inputs(
         tokenizer,
         class_names=class_names,
-        template=prompt_template,
+        dataset_name=dataset_name,
     )
-    text_inputs = {key: value.to(device) for key, value in class_text_inputs.items()}
-    class_text_features = build_class_text_features(model, text_inputs, device)
+    class_text_features = build_class_text_features(
+        model, class_text_inputs, device
+    )
     return ImageCheckpointPredictor(
         model=model,
         metadata=metadata,
@@ -292,7 +292,7 @@ def _predict_checkpoint(
     checkpoint_path: str,
     dataset_name: str,
     batch: dict[str, torch.Tensor],
-    class_text_inputs: dict[str, torch.Tensor],
+    class_text_inputs,
     device: torch.device,
     top_k: int,
     expected_model_name: str,
@@ -305,10 +305,9 @@ def _predict_checkpoint(
             f"expected {expected_model_name}"
         )
     model = model.to(device).eval()
-    text_inputs = {
-        key: value.to(device) for key, value in class_text_inputs.items()
-    }
-    text_features = build_class_text_features(model, text_inputs, device)
+    text_features = build_class_text_features(
+        model, class_text_inputs, device
+    )
     probabilities = _probabilities_from_pixels(
         model,
         batch["pixel_values"],
@@ -362,6 +361,8 @@ def run_checkpoint_probe(
     save_images: bool,
     local_files_only: bool = False,
 ) -> dict[str, Any]:
+    import pandas as pd
+
     if source not in {"train", "test"}:
         raise ValueError("source must be train or test")
     if top_k < 1:
@@ -413,8 +414,10 @@ def run_checkpoint_probe(
         reference_model_name,
         local_files_only=local_files_only or transformers_offline(),
     )
-    class_text_inputs = build_text_inputs(
-        tokenizer, class_names=class_names, template=prompt_template
+    class_text_inputs = build_canonical_prompt_inputs(
+        tokenizer,
+        class_names=class_names,
+        dataset_name=dataset_name,
     )
     batch, images = _prepare_batch(dataset, selected_indices, image_processor)
     device = get_device(device_name)

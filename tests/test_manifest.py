@@ -1,0 +1,50 @@
+from __future__ import annotations
+
+import copy
+
+import pytest
+
+from unml.manifest import (
+    build_baseline_manifest,
+    verify_manifest_artifacts,
+    write_baseline_manifest,
+)
+
+
+def test_baseline_manifest_round_trip_and_hash_verification(tmp_path) -> None:
+    checkpoint = tmp_path / "finetuned_best.bin"
+    checkpoint.write_bytes(b"checkpoint")
+    manifest = build_baseline_manifest(
+        baseline_id="cifar100_canonical_v1",
+        dataset="cifar100",
+        split={"split_id": "split-v1", "digest": "split-hash"},
+        model_config={"model_name": "clip", "adapter_type": "vision_lora"},
+        prompt_contract={"version": "openai_cifar100_v1", "digest": "prompt-hash"},
+        checkpoints={"best": checkpoint},
+        metrics={"retain_val_acc": 0.8},
+    )
+    path = write_baseline_manifest(tmp_path / "manifest.json", manifest)
+    verify_manifest_artifacts(manifest, root=tmp_path)
+    assert path.is_file()
+
+    checkpoint.write_bytes(b"tampered")
+    with pytest.raises(ValueError, match="does not match"):
+        verify_manifest_artifacts(manifest, root=tmp_path)
+
+
+def test_manifest_rejects_missing_required_fields(tmp_path) -> None:
+    checkpoint = tmp_path / "checkpoint.pt"
+    checkpoint.write_bytes(b"x")
+    manifest = build_baseline_manifest(
+        baseline_id="baseline",
+        dataset="cifar100",
+        split={},
+        model_config={},
+        prompt_contract={},
+        checkpoints={"best": checkpoint},
+        metrics={},
+    )
+    broken = copy.deepcopy(manifest)
+    del broken["prompt_contract"]
+    with pytest.raises(ValueError, match="missing fields"):
+        write_baseline_manifest(tmp_path / "broken.json", broken)

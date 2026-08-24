@@ -53,7 +53,7 @@ model:
       lora_targets:
         - q_proj
         - v_proj
-      train_logit_scale: true
+      train_logit_scale: false
       train_logit_scale_during_unlearning: false
       precision: bf16
       gradient_checkpointing: true

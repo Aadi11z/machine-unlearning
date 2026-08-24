@@ -15,8 +15,8 @@ from transformers import CLIPImageProcessor, CLIPTokenizer
 
 from .attack_metrics import _mia_metrics, _safe_auc
 from .data import (
+    build_canonical_prompt_inputs,
     build_loaders,
-    build_text_inputs,
     load_split_metadata,
     validate_checkpoint_dataset,
 )
@@ -26,12 +26,10 @@ from .evaluate import (
     summarize_classification_group,
 )
 from .grouped_eval import _group_classes
+from .methods import H_TGSD_METHODS
 from .model import load_checkpoint
 from .tracker import update_unlearn_with_attacks
 from .utils import get_device
-
-
-H_TGSD_METHODS = {"h_tgsd", "h_tgsd_no_sibling_preservation"}
 
 
 @dataclass
@@ -957,12 +955,11 @@ def run_attack_comparison(cfg: AttackConfig) -> Dict[str, Any]:
     split, dataset_spec, class_names = load_split_metadata(
         cfg.split_path, cfg.dataset_name
     )
-    class_text_inputs = build_text_inputs(
+    class_text_inputs = build_canonical_prompt_inputs(
         tokenizer,
         class_names=class_names,
-        template=cfg.prompt_template,
+        dataset_name=dataset_spec.name,
     )
-    class_text_inputs = {k: v.to(device) for k, v in class_text_inputs.items()}
 
     loaders = build_loaders(
         data_dir=cfg.data_dir,

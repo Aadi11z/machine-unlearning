@@ -15,6 +15,7 @@ from tqdm import trange
 from transformers import CLIPImageProcessor, CLIPTokenizer
 
 from .data import (
+    build_canonical_prompt_inputs,
     build_loaders,
     build_text_inputs,
     cycle_loader,
@@ -29,6 +30,7 @@ from .disentangle import (
     h_tgsd_objective,
 )
 from .model import load_checkpoint, precision_context, save_checkpoint
+from .methods import H_TGSD_METHODS, UNLEARNING_METHODS
 from .tracker import log_unlearn_run
 from .utils import (
     collect_run_provenance,
@@ -39,17 +41,6 @@ from .utils import (
     set_seed,
     tensor_to_float,
 )
-
-
-UNLEARNING_METHODS = {
-    "retain_only",
-    "ga_kl",
-    "counterfactual_rebind",
-    "entropy_rebind",
-    "h_tgsd",
-    "h_tgsd_no_sibling_preservation",
-}
-H_TGSD_METHODS = {"h_tgsd", "h_tgsd_no_sibling_preservation"}
 
 
 @dataclass
@@ -140,6 +131,9 @@ def _eval_snapshot(
     forget = evaluate_classification(
         model, loaders["forget"], **evaluation_args
     )
+    test_forget = evaluate_classification(
+        model, loaders["test_forget"], **evaluation_args
+    )
     test_retain = evaluate_classification(
         model, loaders["test_retain"], **evaluation_args
     )
@@ -150,6 +144,7 @@ def _eval_snapshot(
         "retain_train_acc": retain_train["accuracy"],
         "retain_val_acc": retain_val["accuracy"],
         "forget_acc": forget["accuracy"],
+        "target_test_acc": test_forget["accuracy"],
         "test_retain_acc": test_retain["accuracy"],
         "test_all_acc": test_all["accuracy"],
     }
@@ -313,12 +308,11 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
 
     image_processor = CLIPImageProcessor.from_pretrained(cfg.model_name)
     tokenizer = CLIPTokenizer.from_pretrained(cfg.model_name)
-    class_text_inputs = build_text_inputs(
+    class_text_inputs = build_canonical_prompt_inputs(
         tokenizer,
         class_names=class_names,
-        template=cfg.prompt_template,
+        dataset_name=dataset_spec.name,
     )
-    class_text_inputs = {k: v.to(device) for k, v in class_text_inputs.items()}
 
     loaders = build_loaders(
         data_dir=cfg.data_dir,

@@ -10,6 +10,7 @@ os.environ.setdefault("TRANSFORMERS_NO_FLAX", "1")
 os.environ.setdefault("USE_TF", "0")
 os.environ.setdefault("USE_FLAX", "0")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+os.environ.setdefault("MPLBACKEND", "Agg")
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 for path in (REPO_ROOT, REPO_ROOT / "src"):

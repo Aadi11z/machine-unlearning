@@ -16,18 +16,19 @@ from tqdm import tqdm
 from transformers import CLIPImageProcessor, CLIPTokenizer
 
 from .data import (
+    build_canonical_prompt_inputs,
     build_loaders,
-    build_text_inputs,
     load_split_metadata,
     validate_checkpoint_dataset,
 )
 from .evaluate import build_class_text_features, evaluate_classification
 from .model import (
-    ModelConfig,
     LightweightVLM,
     load_checkpoint,
+    load_recovery_checkpoint,
     precision_context,
     save_checkpoint,
+    save_recovery_checkpoint,
     update_checkpoint_extra,
 )
 from .tracker import log_finetune_epoch, log_finetune_summary
@@ -80,6 +81,7 @@ class FineTuneConfig:
     training_mode: str = "finetune"
     train_loader_key: str = "finetune_train"
     initial_checkpoint: str | None = None
+    resume_checkpoint: str | None = None
     source_metrics_path: str | None = None
     target_optimizer_steps: int | None = None
     target_scheduler_steps: int | None = None
@@ -385,10 +387,23 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
     tokenizer = CLIPTokenizer.from_pretrained(
         cfg.model_name, local_files_only=cfg.local_files_only
     )
-    class_text_inputs = build_text_inputs(
+    class_text_inputs = build_canonical_prompt_inputs(
         tokenizer,
         class_names=class_names,
-        template=cfg.prompt_template,
+        dataset_name=dataset_spec.name,
+    )
+    prompt_contract_metadata = (
+        {
+            "version": class_text_inputs.contract.version,
+            "digest": class_text_inputs.contract.digest,
+            "template_count": class_text_inputs.template_count,
+        }
+        if hasattr(class_text_inputs, "contract")
+        else {
+            "version": "legacy_single_template",
+            "digest": None,
+            "template_count": 1,
+        }
     )
     loaders = build_loaders(
         data_dir=cfg.data_dir,
@@ -475,6 +490,7 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
             "architecture": model.architecture_summary(),
             "provenance": provenance,
             "training_config": resolved_config,
+            "prompt_contract": prompt_contract_metadata,
             "smoke_mode": cfg.smoke_mode,
             "source_initial_checkpoint": cfg.initial_checkpoint,
             "source_initial_checkpoint_sha256": initial_checkpoint_sha256,
@@ -500,6 +516,25 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
     scheduler = CosineAnnealingLR(
         optimizer, T_max=max(1, scheduler_total_steps)
     )
+    recovery_payload = None
+    start_epoch = 0
+    resumed_global_step = 0
+    if cfg.resume_checkpoint:
+        recovery_payload = load_recovery_checkpoint(
+            cfg.resume_checkpoint,
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            scaler=None,
+        )
+        start_epoch = int(recovery_payload["epoch"])
+        resumed_global_step = int(recovery_payload["global_step"])
+    last_path = ckpt_dir / (
+        "retrained_last.pt"
+        if cfg.training_mode == "retrain_oracle"
+        else "finetuned_last.pt"
+    )
+    recovery_path = ckpt_dir / "recovery_latest.pt"
 
     best_metric = -1.0
     best_path = ckpt_dir / (
@@ -507,7 +542,7 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
         if cfg.training_mode == "retrain_oracle"
         else "finetuned_best.pt"
     )
-    global_step = 0
+    global_step = resumed_global_step
     processed_examples = 0
     gradient_parameter_count = 0
     training_started = time.perf_counter()
@@ -516,7 +551,7 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
     show_progress = os.environ.get("UNML_TQDM", "0") == "1"
     final_metrics: Dict[str, float] | None = None
 
-    for epoch in range(epochs_to_run):
+    for epoch in range(start_epoch, epochs_to_run):
         model.set_train_mode()
         epoch_losses = []
         optimization_started = time.perf_counter()
@@ -622,12 +657,15 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
                         if cfg.training_mode == "retrain_oracle"
                         else "finetuned"
                     ),
+                    "checkpoint_role": "best",
                     "epoch": epoch + 1,
+                    "global_step": global_step,
                     "dataset": dataset_spec.name,
                     "class_names": class_names,
                     "architecture": model.architecture_summary(),
                     "provenance": provenance,
                     "training_config": resolved_config,
+                    "prompt_contract": prompt_contract_metadata,
                     "smoke_mode": cfg.smoke_mode,
                     "source_initial_checkpoint": cfg.initial_checkpoint,
                     "source_initial_checkpoint_sha256": (
@@ -638,6 +676,44 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
                 },
             )
 
+        save_checkpoint(
+            str(last_path),
+            model,
+            extra={
+                "stage": (
+                    "retrained_oracle_last"
+                    if cfg.training_mode == "retrain_oracle"
+                    else "finetuned_last"
+                ),
+                "checkpoint_role": "last",
+                "epoch": epoch + 1,
+                "global_step": global_step,
+                "dataset": dataset_spec.name,
+                "class_names": class_names,
+                "architecture": model.architecture_summary(),
+                "provenance": provenance,
+                "training_config": resolved_config,
+                "prompt_contract": prompt_contract_metadata,
+                "smoke_mode": cfg.smoke_mode,
+                "metrics": eval_metrics,
+            },
+        )
+        save_recovery_checkpoint(
+            str(recovery_path),
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            scaler=None,
+            epoch=epoch + 1,
+            global_step=global_step,
+            metrics=full_metrics,
+            provenance={
+                "dataset": dataset_spec.name,
+                "split_path": cfg.split_path,
+                "prompt_contract": prompt_contract_metadata,
+                "training_config": resolved_config,
+            },
+        )
         if global_step >= target_steps:
             break
 

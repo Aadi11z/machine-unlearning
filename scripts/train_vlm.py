@@ -45,6 +45,7 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--initial-checkpoint", type=str, default=None)
+    parser.add_argument("--resume-checkpoint", type=str, default=None)
     parser.add_argument("--source-metrics", type=str, default=None)
     parser.add_argument("--target-optimizer-steps", type=int, default=None)
     parser.add_argument("--target-scheduler-steps", type=int, default=None)
@@ -363,6 +364,7 @@ def main() -> None:
         training_mode="retrain_oracle" if args.oracle else "finetune",
         train_loader_key="retain_train" if args.oracle else "finetune_train",
         initial_checkpoint=initial_checkpoint,
+        resume_checkpoint=args.resume_checkpoint,
         source_metrics_path=source_metrics_path,
         target_optimizer_steps=target_optimizer_steps,
         target_scheduler_steps=target_scheduler_steps,

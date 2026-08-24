@@ -7,19 +7,33 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
+from .prompts import PromptEnsembleInputs, aggregate_prompt_features
 from .utils import move_to_device, tensor_to_float
 
 
 @torch.no_grad()
 def build_class_text_features(
     model,
-    class_text_inputs: Dict[str, torch.Tensor],
+    class_text_inputs: Dict[str, torch.Tensor] | PromptEnsembleInputs,
     device: torch.device,
 ) -> torch.Tensor:
+    if isinstance(class_text_inputs, PromptEnsembleInputs):
+        flat = model.encode_text(
+            class_text_inputs.input_ids.to(device),
+            class_text_inputs.attention_mask.to(device),
+        )
+        shaped = flat.reshape(
+            class_text_inputs.class_count,
+            class_text_inputs.template_count,
+            flat.shape[-1],
+        )
+        return aggregate_prompt_features(shaped)
     return model.encode_text(
         class_text_inputs["input_ids"].to(device),
         class_text_inputs["attention_mask"].to(device),
     )
+
+
 
 
 @torch.no_grad() # needed so that Pytorch doesnt build autograd graphs during execution

@@ -8,6 +8,7 @@ import pytest
 from unml.preflight import (
     cache_manifest_path,
     validate_cache_manifest,
+    validate_production_preflight,
     validate_scratch_layout,
     validate_writable_directory,
     write_cache_manifest,
@@ -74,3 +75,28 @@ def test_writable_directory_check_creates_no_persistent_probe(
 
     assert resolved == destination.resolve()
     assert list(destination.iterdir()) == []
+
+
+def test_production_preflight_validates_writable_inputs(tmp_path: Path) -> None:
+    split = tmp_path / "split.json"
+    split.write_text("{}")
+    result = validate_production_preflight(
+        dataset_name="cifar10",
+        split_path=split,
+        output_dir=tmp_path / "outputs",
+        precision="fp32",
+        require_cuda=False,
+    )
+    assert result["dataset"] == "cifar10"
+    assert Path(result["output_dir"]).is_dir()
+
+
+def test_production_preflight_rejects_missing_split(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="split"):
+        validate_production_preflight(
+            dataset_name="cifar10",
+            split_path=tmp_path / "missing.json",
+            output_dir=tmp_path / "outputs",
+            precision="fp32",
+            require_cuda=False,
+        )

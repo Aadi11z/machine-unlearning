@@ -15,7 +15,9 @@ from unml.model import (
     _feature_tensor,
     apply_adapter_state,
     load_checkpoint,
+    read_checkpoint_payload,
     save_checkpoint,
+    validate_adapter_payload,
 )
 
 
@@ -344,3 +346,72 @@ def test_apply_adapter_state_rejects_wrong_dtype_before_copying(monkeypatch) -> 
         apply_adapter_state(model, adapter_state)
 
     _assert_model_state_unchanged(model, reference)
+
+
+@pytest.mark.parametrize("malformation", ["missing", "unexpected", "shape", "dtype"])
+def test_validate_adapter_payload_checks_complete_adapter_contract(
+    monkeypatch, malformation: str
+) -> None:
+    _patch_tiny_clip(monkeypatch, num_vision_layers=2)
+    model = LightweightVLM(
+        ModelConfig(
+            model_name="tiny",
+            adapter_type="vision_lora",
+            lora_layers="all",
+            train_logit_scale=False,
+        )
+    )
+    state = _adapter_state(model)
+    key = next(name for name in state if name != "logit_scale")
+    if malformation == "missing":
+        del state[key]
+        expected_error = "missing expected keys"
+    elif malformation == "unexpected":
+        state["foreign.weight"] = torch.zeros(1)
+        expected_error = "unexpected keys"
+    elif malformation == "shape":
+        state[key] = torch.zeros((*state[key].shape, 1), dtype=state[key].dtype)
+        expected_error = "incompatible tensors"
+    else:
+        state[key] = state[key].to(torch.float64)
+        expected_error = "incompatible tensors"
+
+    with pytest.raises(ValueError, match=expected_error):
+        validate_adapter_payload(
+            {
+                "model_config": model.cfg.__dict__,
+                "adapter_state_dict": state,
+            },
+            model.cfg,
+            expected_adapter_state=_adapter_state(model),
+        )
+
+
+@pytest.mark.parametrize("malformation", ["missing", "shape"])
+def test_load_checkpoint_rejects_incomplete_or_incompatible_adapter_state(
+    tmp_path, monkeypatch, malformation: str
+) -> None:
+    _patch_tiny_clip(monkeypatch, num_vision_layers=2)
+    model = LightweightVLM(
+        ModelConfig(
+            model_name="tiny",
+            adapter_type="vision_lora",
+            lora_layers="all",
+            train_logit_scale=False,
+        )
+    )
+    checkpoint = tmp_path / f"bad_{malformation}.pt"
+    save_checkpoint(str(checkpoint), model)
+    payload = read_checkpoint_payload(str(checkpoint))
+    state = payload["adapter_state_dict"]
+    key = next(name for name in state if name != "logit_scale")
+    if malformation == "missing":
+        del state[key]
+        expected_error = "missing expected keys"
+    else:
+        state[key] = torch.zeros((*state[key].shape, 1), dtype=state[key].dtype)
+        expected_error = "incompatible tensors"
+    torch.save(payload, checkpoint)
+
+    with pytest.raises(ValueError, match=expected_error):
+        load_checkpoint(str(checkpoint))

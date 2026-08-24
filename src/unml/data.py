@@ -12,6 +12,11 @@ from torchvision.datasets import CIFAR10, CIFAR100
 from torchvision.transforms import InterpolationMode
 
 from .config import normalize_dataset_name
+from .prompts import (
+    PromptEnsembleInputs,
+    resolve_prompt_contract,
+    tokenize_prompt_ensemble,
+)
 from .utils import DEFAULT_PROMPT_TEMPLATE, ensure_dir, load_json, save_json
 
 if TYPE_CHECKING:
@@ -491,7 +496,6 @@ def download_and_prepare_splits(
     superclass: str | None = None,
     sibling_classes: Sequence[int] = (),
 ) -> Dict[str, object]:
-    spec = get_dataset_spec(dataset_name)
     split_cfg = SplitConfig(
         forget_classes=forget_classes,
         forget_fraction=forget_fraction,
@@ -502,29 +506,44 @@ def download_and_prepare_splits(
         superclass=superclass,
         sibling_classes=sibling_classes,
     )
-    sibling_classes, unrelated_classes = validate_hierarchy_request(spec, split_cfg)
-    split_cfg.sibling_classes = sibling_classes
-    split_cfg.unrelated_classes = unrelated_classes
-
+    spec = get_dataset_spec(dataset_name)
+    validate_hierarchy_request(spec, split_cfg)
     ensure_dir(data_dir)
     ensure_dir(Path(split_path).parent)
     train_ds, test_ds = _load_dataset_pair(data_dir, spec.name, download=True)
-    splits: Dict[str, object] = make_splits(
-        train_ds.targets,
-        test_ds.targets,
-        split_cfg,
+    splits = build_split_payload(
+        train_ds.targets, test_ds.targets, split_cfg, dataset_name=dataset_name
     )
+    save_json(splits, split_path)
+    return splits
+
+
+def build_split_payload(
+    train_labels: Sequence[int],
+    test_labels: Sequence[int],
+    cfg: SplitConfig,
+    *,
+    dataset_name: str,
+) -> Dict[str, object]:
+    """Build complete split metadata from one already-loaded dataset pair."""
+    spec = get_dataset_spec(dataset_name)
+    sibling_classes, unrelated_classes = validate_hierarchy_request(spec, cfg)
+    cfg.sibling_classes = sibling_classes
+    cfg.unrelated_classes = unrelated_classes
+
+    splits: Dict[str, object] = make_splits(train_labels, test_labels, cfg)
     splits["dataset"] = spec.name
     splits["class_names"] = list(spec.class_names)
-    splits["request_name"] = request_name
-    splits["request_type"] = request_type
-    splits["superclass"] = superclass
-    splits["target_classes"] = sorted(set(int(value) for value in forget_classes))
+    splits["request_name"] = cfg.request_name
+    splits["request_type"] = cfg.request_type
+    splits["superclass"] = cfg.superclass
+    splits["target_classes"] = sorted(
+        set(int(value) for value in cfg.forget_classes)
+    )
     splits["sibling_classes"] = sibling_classes
     splits["unrelated_classes"] = unrelated_classes
-    splits["seed"] = seed
-    splits["forget_fraction"] = forget_fraction
-    save_json(splits, split_path)
+    splits["seed"] = cfg.seed
+    splits["forget_fraction"] = cfg.forget_fraction
     return splits
 
 
@@ -550,6 +569,27 @@ def build_text_inputs(
         "input_ids": tokens["input_ids"],
         "attention_mask": tokens["attention_mask"],
     }
+
+
+def build_canonical_prompt_inputs(
+    tokenizer: CLIPTokenizer,
+    class_names: Sequence[str],
+    dataset_name: str,
+    *,
+    max_length: int = 32,
+) -> PromptEnsembleInputs | Dict[str, torch.Tensor]:
+    """Build the versioned prompt contract for canonical CIFAR-100 only."""
+    normalized = normalize_dataset_name(dataset_name)
+    if normalized != "cifar100":
+        return build_text_inputs(
+            tokenizer, class_names=class_names, max_length=max_length
+        )
+    return tokenize_prompt_ensemble(
+        tokenizer,
+        class_names,
+        resolve_prompt_contract(normalized),
+        max_length=max_length,
+    )
 
 
 def build_loaders(
