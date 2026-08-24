@@ -10,7 +10,6 @@ __pycache__/
 # Experiment artifacts
 data/
 outputs/*
-!outputs/README.md
 
 # Packaging
 *.egg-info/
@@ -18,13 +17,8 @@ build/
 dist/
 
 # Explanations
-docs/*
-!docs/PLAN.md
-!docs/IDEAS.md
-!docs/PRD.md
-!docs/README.md
-!docs/RUNBOOK.md
-!docs/flowchart.md
+assets/
+docs/
 research/
 
 # Tracker Files (experimentation)
