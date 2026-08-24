@@ -56,6 +56,8 @@ def main() -> None:
             weight_decay=spec.weight_decay,
             max_train_steps=spec.max_train_steps,
             seed=spec.seed,
+            warmup_fraction=spec.warmup_fraction,
+            random_crop=spec.random_crop,
             device=args.device,
             local_files_only=args.local_files_only,
             evaluate_test=False,

@@ -11,7 +11,7 @@ from typing import Any, Dict, Mapping
 import torch
 import torch.nn.functional as F
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import LambdaLR
 from tqdm import tqdm
 from transformers import CLIPImageProcessor, CLIPTokenizer
 
@@ -71,6 +71,7 @@ class FineTuneConfig:
     prefetch_factor: int = 2
     non_blocking: bool = False
     lr: float = 1e-3
+    warmup_fraction: float = 0.1
     weight_decay: float = 1e-4
     epochs: int = 5
     max_train_steps: int = -1
@@ -78,6 +79,7 @@ class FineTuneConfig:
     device: str = "auto"
     local_files_only: bool = False
     max_eval_batches: int | None = None
+    random_crop: bool = False
     evaluate_test: bool = True
     smoke_mode: bool = False
     training_mode: str = "finetune"
@@ -365,6 +367,8 @@ def _evaluate_all(
 def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
     if cfg.gradient_accumulation_steps < 1:
         raise ValueError("gradient_accumulation_steps must be at least 1")
+    if not 0.0 <= cfg.warmup_fraction < 1.0:
+        raise ValueError("warmup_fraction must be in [0, 1)")
     _validate_training_mode(cfg)
     run_started = time.perf_counter()
     set_seed(cfg.seed)
@@ -428,6 +432,7 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
         pin_memory=cfg.pin_memory,
         persistent_workers=cfg.persistent_workers,
         prefetch_factor=cfg.prefetch_factor,
+        random_crop=cfg.random_crop,
     )
 
     model_cfg = ModelConfig(
@@ -524,12 +529,20 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
         gradient_accumulation_steps=cfg.gradient_accumulation_steps,
         epochs=cfg.epochs,
         max_train_steps=cfg.max_train_steps,
-        target_optimizer_steps=cfg.target_optimizer_steps,
         target_scheduler_steps=cfg.target_scheduler_steps,
     )
-    scheduler = CosineAnnealingLR(
-        optimizer, T_max=max(1, scheduler_total_steps)
-    )
+    warmup_steps = int(scheduler_total_steps * cfg.warmup_fraction)
+    decay_steps = max(1, scheduler_total_steps - warmup_steps)
+
+    def schedule(step: int) -> float:
+        if warmup_steps and step < warmup_steps:
+            return float(step + 1) / warmup_steps
+        progress = min(
+            1.0, max(0.0, (step - warmup_steps) / decay_steps)
+        )
+        return 0.5 * (1.0 + math.cos(math.pi * progress))
+
+    scheduler = LambdaLR(optimizer, lr_lambda=schedule)
     recovery_payload = None
     start_epoch = 0
     resumed_global_step = 0

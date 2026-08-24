@@ -356,7 +356,7 @@ class CIFARSubset(Dataset):
 
 
 class CLIPCollator:
-    def __init__(self, image_processor):
+    def __init__(self, image_processor, random_augment: bool = False):
         self.image_processor = image_processor
         size_cfg = image_processor.size
         crop_cfg = image_processor.crop_size
@@ -371,10 +371,24 @@ class CLIPCollator:
         else:
             crop_size = resize_size
 
-        self.transform = T.Compose(
+        spatial = (
             [
+                T.RandomResizedCrop(
+                    crop_size,
+                    scale=(0.8, 1.0),
+                    interpolation=InterpolationMode.BICUBIC,
+                ),
+                T.RandomHorizontalFlip(),
+            ]
+            if random_augment
+            else [
                 T.Resize(resize_size, interpolation=InterpolationMode.BICUBIC),
                 T.CenterCrop(crop_size),
+            ]
+        )
+        self.transform = T.Compose(
+            spatial
+            + [
                 T.ToTensor(),
                 T.Normalize(
                     mean=list(image_processor.image_mean),
@@ -547,8 +561,12 @@ def build_split_payload(
     return splits
 
 
-def make_collate_fn(image_processor: CLIPImageProcessor):
-    return CLIPCollator(image_processor=image_processor)
+def make_collate_fn(
+    image_processor: CLIPImageProcessor, random_augment: bool = False
+):
+    return CLIPCollator(
+        image_processor=image_processor, random_augment=random_augment
+    )
 
 
 def build_text_inputs(
@@ -602,6 +620,7 @@ def build_loaders(
     pin_memory: bool = True,
     persistent_workers: bool = False,
     prefetch_factor: int | None = 2,
+    random_crop: bool = False,
 ) -> Dict[str, DataLoader]:
     if num_workers < 0:
         raise ValueError("num_workers must be non-negative")
@@ -609,11 +628,15 @@ def build_loaders(
         raise ValueError("prefetch_factor must be at least 1")
     split, spec, _ = load_split_metadata(split_path, dataset_name)
     train_ds, test_ds = _load_dataset_pair(data_dir, spec.name, download=False)
-    collate_fn = make_collate_fn(image_processor)
+    eval_collate_fn = make_collate_fn(image_processor)
+    train_collate_fn = make_collate_fn(
+        image_processor, random_augment=random_crop
+    )
 
     def _loader(
         dataset: Dataset,
         shuffle: bool,
+        collate_fn=eval_collate_fn,
         drop_last: bool = False,
         reuse_workers: bool = False,
     ) -> DataLoader:
@@ -659,14 +682,23 @@ def build_loaders(
 
     return {
         "forget": _loader(
-            subsets["forget"], shuffle=True, reuse_workers=True
+            subsets["forget"],
+            shuffle=True,
+            collate_fn=train_collate_fn,
+            reuse_workers=True,
         ),
         "retain_train": _loader(
-            subsets["retain_train"], shuffle=True, reuse_workers=True
+            subsets["retain_train"],
+            shuffle=True,
+            collate_fn=train_collate_fn,
+            reuse_workers=True,
         ),
         "retain_val": _loader(subsets["retain_val"], shuffle=False),
         "finetune_train": _loader(
-            subsets["finetune_train"], shuffle=True, reuse_workers=True
+            subsets["finetune_train"],
+            shuffle=True,
+            collate_fn=train_collate_fn,
+            reuse_workers=True,
         ),
         "test_forget": _loader(subsets["test_forget"], shuffle=False),
         "test_retain": _loader(subsets["test_retain"], shuffle=False),
