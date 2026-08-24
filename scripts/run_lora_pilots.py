@@ -21,12 +21,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data-dir", required=True)
     parser.add_argument("--split-path", required=True)
     parser.add_argument("--output-root", required=True)
-    parser.add_argument("--model-name", default="openai/clip-vit-base-patch32")
+    parser.add_argument("--model-name", default="openai/clip-vit-base-patch16")
     parser.add_argument("--steps", type=int, default=250)
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--device", default="auto")
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--precision", choices=("fp32", "fp16", "bf16"), default="bf16"
+    )
     parser.add_argument("--report-path", required=True)
     parser.add_argument("--local-files-only", action="store_true")
     return parser.parse_args()
@@ -60,6 +62,7 @@ def main() -> None:
             random_crop=spec.random_crop,
             device=args.device,
             local_files_only=args.local_files_only,
+            precision=args.precision,
             evaluate_test=False,
             gradient_checkpointing=True,
         )
