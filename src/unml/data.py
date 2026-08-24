@@ -629,8 +629,10 @@ def build_loaders(
     split, spec, _ = load_split_metadata(split_path, dataset_name)
     train_ds, test_ds = _load_dataset_pair(data_dir, spec.name, download=False)
     eval_collate_fn = make_collate_fn(image_processor)
-    train_collate_fn = make_collate_fn(
-        image_processor, random_augment=random_crop
+    train_collate_fn = (
+        make_collate_fn(image_processor, random_augment=True)
+        if random_crop
+        else eval_collate_fn
     )
 
     def _loader(
