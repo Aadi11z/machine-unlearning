@@ -415,3 +415,56 @@ def test_load_checkpoint_rejects_incomplete_or_incompatible_adapter_state(
 
     with pytest.raises(ValueError, match=expected_error):
         load_checkpoint(str(checkpoint))
+
+
+def test_apply_adapter_state_is_atomic_on_unexpected_keys(monkeypatch) -> None:
+    _patch_tiny_clip(monkeypatch, num_vision_layers=2)
+    model = LightweightVLM(
+        ModelConfig(
+            model_name="tiny",
+            adapter_type="vision_lora",
+            lora_layers="all",
+            train_logit_scale=False,
+        )
+    )
+    reference = copy.deepcopy(model.state_dict())
+
+    with pytest.raises(ValueError, match="unexpected keys"):
+        apply_adapter_state(model, {"does.not.exist.weight": torch.zeros(2)})
+
+    _assert_model_state_unchanged(model, reference)
+
+
+def test_validate_adapter_payload_reports_config_mismatches(
+    tmp_path, monkeypatch
+) -> None:
+    _patch_tiny_clip(monkeypatch, num_vision_layers=2)
+    model = LightweightVLM(
+        ModelConfig(
+            model_name="tiny",
+            adapter_type="vision_lora",
+            lora_layers="all",
+            train_logit_scale=False,
+        )
+    )
+    checkpoint = tmp_path / "baseline.pt"
+    save_checkpoint(str(checkpoint), model)
+    payload = read_checkpoint_payload(str(checkpoint))
+    reference_cfg = ModelConfig(**payload["model_config"])
+
+    broken = copy.deepcopy(payload)
+    broken["model_config"]["lora_rank"] = 99
+    with pytest.raises(ValueError, match="lora_rank"):
+        validate_adapter_payload(broken, reference_cfg, source="broken")
+
+    with pytest.raises(ValueError, match="no adapter weights"):
+        validate_adapter_payload(
+            {"model_config": payload["model_config"]}, reference_cfg
+        )
+
+    wrong_name = copy.deepcopy(payload)
+    wrong_name["model_config"]["model_name"] = "other"
+    with pytest.raises(ValueError, match="expected tiny"):
+        validate_adapter_payload(
+            wrong_name, reference_cfg, expected_model_name="tiny"
+        )

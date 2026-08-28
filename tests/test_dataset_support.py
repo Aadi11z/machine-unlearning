@@ -201,26 +201,26 @@ def test_parameters_yaml_switches_complete_dataset_profile(monkeypatch) -> None:
     )
 
 
-def test_sharanga_environment_redirects_heavy_artifacts(monkeypatch) -> None:
+def test_environment_redirects_heavy_artifacts(monkeypatch) -> None:
     payload = load_runtime_config("config/parameters.yaml")
-    monkeypatch.setenv("UNML_DATA", "/scratch/user/project/data")
-    monkeypatch.setenv("UNML_OUTPUTS", "/scratch/user/project/outputs")
+    monkeypatch.setenv("UNML_DATA", "/workspace/data")
+    monkeypatch.setenv("UNML_OUTPUTS", "/workspace/outputs")
 
     dataset_name, split_path = resolve_dataset_and_split_path(
         "cifar100", None, payload
     )
 
     assert resolve_data_dir(None, payload).as_posix() == (
-        "/scratch/user/project/data"
+        "/workspace/data"
     )
     assert split_path == (
-        "/scratch/user/project/outputs/cifar100/flowers_superclass/"
+        "/workspace/outputs/cifar100/flowers_superclass/"
         "splits/flowers_superclass_split.json"
     )
     assert resolve_stage_output_dir(
         None, payload, dataset_name, "unlearning"
     ).as_posix() == (
-        "/scratch/user/project/outputs/cifar100/flowers_superclass/unlearning"
+        "/workspace/outputs/cifar100/flowers_superclass/unlearning"
     )
 
 

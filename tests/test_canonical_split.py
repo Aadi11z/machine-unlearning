@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import copy
-import subprocess
-import sys
 from collections import Counter
 from pathlib import Path
 
@@ -152,18 +150,3 @@ def test_canonical_split_binds_to_the_loaded_source_label_order(
         validate_canonical_cifar100_dataset_labels(
             canonical_payload, reordered_train_labels, test_labels
         )
-
-
-def test_generate_canonical_split_cli_help_runs() -> None:
-    repo_root = Path(__file__).resolve().parents[1]
-    proc = subprocess.run(
-        [sys.executable, str(repo_root / "scripts/generate_canonical_split.py"), "--help"],
-        capture_output=True,
-        text=True,
-        check=False,
-        cwd=repo_root,
-    )
-
-    assert proc.returncode == 0
-    assert "usage:" in proc.stdout.lower()
-    assert "no forget request" in proc.stdout.lower()

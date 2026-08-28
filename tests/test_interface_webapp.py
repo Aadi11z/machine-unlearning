@@ -10,7 +10,6 @@ import pytest
 import torch
 from fastapi.testclient import TestClient
 from PIL import Image
-from transformers import CLIPConfig, CLIPModel, CLIPTextConfig, CLIPVisionConfig
 
 from interface.catalog import ArtifactCatalog, CandidateArtifact
 from interface.jobs import JobManager
@@ -25,44 +24,16 @@ from interface.webapp import (
 CLASS_NAMES = ("rose", "tulip", "woman")
 
 
-def _tiny_clip() -> CLIPModel:
-    vision = CLIPVisionConfig(
-        hidden_size=32,
-        intermediate_size=64,
-        num_hidden_layers=2,
-        num_attention_heads=4,
-        image_size=32,
-        patch_size=16,
-        projection_dim=16,
-    )
-    text = CLIPTextConfig(
-        vocab_size=100,
-        hidden_size=32,
-        intermediate_size=64,
-        num_hidden_layers=2,
-        num_attention_heads=4,
-        max_position_embeddings=16,
-        projection_dim=16,
-    )
-    return CLIPModel(
-        CLIPConfig(
-            text_config=text.to_dict(),
-            vision_config=vision.to_dict(),
-            projection_dim=16,
-        )
-    )
-
-
 class _FakeProcessor:
     def __call__(self, images, return_tensors=None):
         return {"pixel_values": torch.zeros(1, 3, 32, 32)}
 
 
 @pytest.fixture
-def client_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def client_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tiny_clip_factory):
     monkeypatch.setattr(
         "unml.model.CLIPModel.from_pretrained",
-        lambda *_args, **_kwargs: _tiny_clip(),
+        lambda *_args, **_kwargs: tiny_clip_factory(),
     )
     from unml.model import LightweightVLM, ModelConfig, save_checkpoint
 

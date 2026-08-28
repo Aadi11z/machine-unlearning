@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.cli_smoke
+
 
 SCRIPTS = [
     "helpers/cache_model.py",
@@ -21,6 +23,7 @@ SCRIPTS = [
     "scripts/evaluate_attacks.py",
     "scripts/run_pipeline.py",
     "scripts/run_lora_pilots.py",
+    "scripts/generate_canonical_split.py",
 ]
 
 
@@ -32,6 +35,8 @@ def test_script_help_runs(script_path: str) -> None:
 
     assert proc.returncode == 0
     assert "usage:" in proc.stdout.lower()
+    if script_path == "scripts/generate_canonical_split.py":
+        assert "no forget request" in proc.stdout.lower()
 
 
 def test_pipeline_show_config_does_not_start_pipeline() -> None:

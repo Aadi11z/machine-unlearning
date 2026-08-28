@@ -8,7 +8,6 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-from transformers import CLIPConfig, CLIPModel, CLIPTextConfig, CLIPVisionConfig
 
 from interface.guards import (
     SlidingWindowLimiter,
@@ -76,28 +75,12 @@ def test_cleanup_expired_jobs_removes_only_old_dirs(tmp_path: Path) -> None:
     assert new_dir.exists()
 
 
-def _tiny_clip():
-    vision = CLIPVisionConfig(
-        hidden_size=32, intermediate_size=64, num_hidden_layers=2,
-        num_attention_heads=4, image_size=32, patch_size=16, projection_dim=16,
-    )
-    text = CLIPTextConfig(
-        vocab_size=100, hidden_size=32, intermediate_size=64,
-        num_hidden_layers=2, num_attention_heads=4,
-        max_position_embeddings=16, projection_dim=16,
-    )
-    return CLIPModel(
-        CLIPConfig(text_config=text.to_dict(), vision_config=vision.to_dict(),
-                   projection_dim=16)
-    )
-
-
 def test_safetensors_round_trip_preserves_scalars_and_config(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tiny_clip_factory
 ) -> None:
     monkeypatch.setattr(
         "unml.model.CLIPModel.from_pretrained",
-        lambda *_args, **_kwargs: _tiny_clip(),
+        lambda *_args, **_kwargs: tiny_clip_factory(),
     )
     from unml.model import (
         LightweightVLM,
@@ -137,11 +120,11 @@ def test_safetensors_round_trip_preserves_scalars_and_config(
 
 
 def test_safetensors_delta_activates_in_registry(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tiny_clip_factory
 ) -> None:
     monkeypatch.setattr(
         "unml.model.CLIPModel.from_pretrained",
-        lambda *_args, **_kwargs: _tiny_clip(),
+        lambda *_args, **_kwargs: tiny_clip_factory(),
     )
     from unml.model import (
         LightweightVLM,
@@ -231,11 +214,11 @@ def _image():
 
 
 def test_rate_limited_endpoints_return_429(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tiny_clip_factory
 ) -> None:
     monkeypatch.setattr(
         "unml.model.CLIPModel.from_pretrained",
-        lambda *_args, **_kwargs: _tiny_clip(),
+        lambda *_args, **_kwargs: tiny_clip_factory(),
     )
     from unml.model import LightweightVLM, ModelConfig, save_checkpoint
 
@@ -305,11 +288,11 @@ def _catalog_with_baseline(tmp_path: Path, baseline_path: Path):
 
 
 def test_budget_exhaustion_returns_503(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tiny_clip_factory
 ) -> None:
     monkeypatch.setattr(
         "unml.model.CLIPModel.from_pretrained",
-        lambda *_args, **_kwargs: _tiny_clip(),
+        lambda *_args, **_kwargs: tiny_clip_factory(),
     )
     from unml.model import LightweightVLM, ModelConfig, save_checkpoint
 

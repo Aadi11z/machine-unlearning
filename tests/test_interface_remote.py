@@ -2,13 +2,10 @@ from __future__ import annotations
 
 import copy
 import json
-import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from transformers import CLIPConfig, CLIPModel, CLIPTextConfig, CLIPVisionConfig
 
 from interface.catalog import ArtifactCatalog, validate_job_spec
 from interface.jobs import (
@@ -116,29 +113,13 @@ def test_modal_runner_allows_long_running_endpoint(tmp_path: Path) -> None:
     assert runner.request_timeout_s == 30
 
 
-def _tiny_clip():
-    from transformers import CLIPVisionConfig, CLIPTextConfig, CLIPConfig
-
-    vision = CLIPVisionConfig(
-        hidden_size=32, intermediate_size=64, num_hidden_layers=2,
-        num_attention_heads=4, image_size=32, patch_size=16, projection_dim=16,
-    )
-    text = CLIPTextConfig(
-        vocab_size=100, hidden_size=32, intermediate_size=64,
-        num_hidden_layers=2, num_attention_heads=4,
-        max_position_embeddings=16, projection_dim=16,
-    )
-    return CLIPModel(
-        CLIPConfig(text_config=text.to_dict(), vision_config=vision.to_dict(),
-                   projection_dim=16)
-    )
-
-
 @pytest.fixture
-def artifact_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+def artifact_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tiny_clip_factory
+) -> SimpleNamespace:
     monkeypatch.setattr(
         "unml.model.CLIPModel.from_pretrained",
-        lambda *_args, **_kwargs: _tiny_clip(),
+        lambda *_args, **_kwargs: tiny_clip_factory(),
     )
     from unml.model import LightweightVLM, ModelConfig, save_checkpoint
 
@@ -281,31 +262,42 @@ def test_write_job_artifacts_rejects_invalid_adapter_before_persisting(artifact_
     ).exists()
 
 
-def test_modal_runner_round_trip_against_stub(artifact_env, tmp_path) -> None:
+class _StubResponse:
+    def __init__(self, status: int, payload: dict) -> None:
+        self.status = status
+        self._body = json.dumps(payload).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def read(self) -> bytes:
+        return self._body
+
+
+def _stub_modal_responses(monkeypatch, responses, seen_bodies) -> None:
+    def fake_urlopen(request, timeout):
+        body = request.data
+        headers = {key.lower(): value for key, value in request.header_items()}
+        assert verify_signature(
+            "test-secret", body, headers[SIGNATURE_HEADER.lower()]
+        )
+        seen_bodies.append(json.loads(body))
+        status, payload = responses.pop(0)
+        return _StubResponse(status, payload)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+
+def test_modal_runner_round_trip_against_stub(
+    artifact_env, monkeypatch: pytest.MonkeyPatch
+) -> None:
     env = artifact_env
     secret = "test-secret"
-    spec_body = json.dumps({"class_id": 70, "method": "ga_kl", "steps": 120}).encode()
-
-    def make_handler(response_payload: bytes, seen: dict):
-        class Handler(BaseHTTPRequestHandler):
-            def do_POST(self):  # noqa: N802
-                length = int(self.headers.get("Content-Length", 0))
-                body = self.rfile.read(length)
-                seen["signature"] = self.headers.get(SIGNATURE_HEADER)
-                seen["body"] = body
-                assert verify_signature(secret, body, seen["signature"])
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(response_payload)
-
-            def log_message(self, *args):  # silence
-                pass
-
-        return Handler
-
-    response_payload = json.dumps(
-        {
+    responses = [
+        (200, {
             "checkpoint_b64": encode_checkpoint(env.checkpoint_bytes),
             "class_id": 70,
             "class_name": "rose",
@@ -316,42 +308,38 @@ def test_modal_runner_round_trip_against_stub(artifact_env, tmp_path) -> None:
             "steps": 120,
             "wall_time_s": 42.0,
             "metrics": {"forget_acc": 0.0},
-        }
-    ).encode()
-
-    seen: dict = {}
-    server = HTTPServer(("127.0.0.1", 0), make_handler(response_payload, seen))
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        runner = ModalJobRunner(
-            endpoint_url=f"http://127.0.0.1:{server.server_port}/",
-            secret=secret,
-            output_root=env.output_root,
-        )
-        job = JobRecord(
-            job_id="t1",
-            class_id=70,
-            class_name="rose",
-            request_name="rose_selective",
-            superclass="flowers",
-            sibling_classes=[54, 62, 82, 92],
-            method="ga_kl",
-            steps=120,
-            status=JobStatus.RUNNING,
-        )
-        runner(job)
-    finally:
-        server.shutdown()
+        })
+    ]
+    seen_bodies = []
+    _stub_modal_responses(monkeypatch, responses, seen_bodies)
+    runner = ModalJobRunner(
+        endpoint_url="https://worker.invalid",
+        secret=secret,
+        output_root=env.output_root,
+    )
+    job = JobRecord(
+        job_id="t1",
+        class_id=70,
+        class_name="rose",
+        request_name="rose_selective",
+        superclass="flowers",
+        sibling_classes=[54, 62, 82, 92],
+        method="ga_kl",
+        steps=120,
+        status=JobStatus.RUNNING,
+    )
+    runner(job)
 
     assert job.status is JobStatus.RUNNING  # manager sets DONE, not the runner
     assert job.source == "modal"
     assert job.candidate_id == "rose_selective_ga_kl_120"
     assert Path(job.checkpoint_path).is_file()
-    assert seen["body"] == spec_body
+    assert seen_bodies == [{"class_id": 70, "method": "ga_kl", "steps": 120}]
 
 
-def test_modal_runner_polls_detached_function_call(artifact_env) -> None:
+def test_modal_runner_polls_detached_function_call(
+    artifact_env, monkeypatch: pytest.MonkeyPatch
+) -> None:
     env = artifact_env
     secret = "test-secret"
     responses = [
@@ -375,47 +363,25 @@ def test_modal_runner_polls_detached_function_call(artifact_env) -> None:
     ]
     seen_bodies: list[dict] = []
 
-    class Handler(BaseHTTPRequestHandler):
-        def do_POST(self):  # noqa: N802
-            length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(length)
-            assert verify_signature(secret, body, self.headers.get(SIGNATURE_HEADER))
-            seen_bodies.append(json.loads(body))
-            status, payload = responses.pop(0)
-            encoded = json.dumps(payload).encode()
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(encoded)))
-            self.end_headers()
-            self.wfile.write(encoded)
-
-        def log_message(self, *args):
-            pass
-
-    server = HTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        runner = ModalJobRunner(
-            endpoint_url=f"http://127.0.0.1:{server.server_port}/",
-            secret=secret,
-            output_root=env.output_root,
-            poll_interval_s=0,
-        )
-        job = JobRecord(
-            job_id="t1",
-            class_id=70,
-            class_name="rose",
-            request_name="rose_selective",
-            superclass="flowers",
-            sibling_classes=[54, 62, 82, 92],
-            method="ga_kl",
-            steps=120,
-            status=JobStatus.RUNNING,
-        )
-        runner(job)
-    finally:
-        server.shutdown()
+    _stub_modal_responses(monkeypatch, responses, seen_bodies)
+    runner = ModalJobRunner(
+        endpoint_url="https://worker.invalid",
+        secret=secret,
+        output_root=env.output_root,
+        poll_interval_s=0,
+    )
+    job = JobRecord(
+        job_id="t1",
+        class_id=70,
+        class_name="rose",
+        request_name="rose_selective",
+        superclass="flowers",
+        sibling_classes=[54, 62, 82, 92],
+        method="ga_kl",
+        steps=120,
+        status=JobStatus.RUNNING,
+    )
+    runner(job)
 
     assert seen_bodies == [
         {"class_id": 70, "method": "ga_kl", "steps": 120},
@@ -426,11 +392,13 @@ def test_modal_runner_polls_detached_function_call(artifact_env) -> None:
     assert Path(job.checkpoint_path).is_file()
 
 
-def test_modal_runner_rejects_mismatched_response_before_persisting(artifact_env) -> None:
+def test_modal_runner_rejects_mismatched_response_before_persisting(
+    artifact_env, monkeypatch: pytest.MonkeyPatch
+) -> None:
     env = artifact_env
     secret = "test-secret"
-    response_payload = json.dumps(
-        {
+    responses = [
+        (200, {
             "checkpoint_b64": encode_checkpoint(env.checkpoint_bytes),
             "class_id": 69,
             "class_name": "rocket",
@@ -439,46 +407,28 @@ def test_modal_runner_rejects_mismatched_response_before_persisting(artifact_env
             "sibling_classes": [47, 55, 72, 95],
             "method": "ga_kl",
             "steps": 120,
-        }
-    ).encode()
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_POST(self):  # noqa: N802
-            length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(length)
-            assert verify_signature(secret, body, self.headers.get(SIGNATURE_HEADER))
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(response_payload)
-
-        def log_message(self, *args):  # silence
-            pass
-
-    server = HTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        runner = ModalJobRunner(
-            endpoint_url=f"http://127.0.0.1:{server.server_port}/",
-            secret=secret,
-            output_root=env.output_root,
-        )
-        job = JobRecord(
-            job_id="t1",
-            class_id=70,
-            class_name="rose",
-            request_name="rose_selective",
-            superclass="flowers",
-            sibling_classes=[54, 62, 82, 92],
-            method="ga_kl",
-            steps=120,
-            status=JobStatus.RUNNING,
-        )
-        with pytest.raises(RuntimeError, match="class_id"):
-            runner(job)
-    finally:
-        server.shutdown()
+        })
+    ]
+    seen_bodies = []
+    _stub_modal_responses(monkeypatch, responses, seen_bodies)
+    runner = ModalJobRunner(
+        endpoint_url="https://worker.invalid",
+        secret=secret,
+        output_root=env.output_root,
+    )
+    job = JobRecord(
+        job_id="t1",
+        class_id=70,
+        class_name="rose",
+        request_name="rose_selective",
+        superclass="flowers",
+        sibling_classes=[54, 62, 82, 92],
+        method="ga_kl",
+        steps=120,
+        status=JobStatus.RUNNING,
+    )
+    with pytest.raises(RuntimeError, match="class_id"):
+        runner(job)
 
     assert not (env.output_root / "cifar100" / "jobs").exists()
 

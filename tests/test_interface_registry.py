@@ -1,53 +1,21 @@
 from __future__ import annotations
 
-import copy
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import torch
 from PIL import Image
-from transformers import CLIPConfig, CLIPModel, CLIPTextConfig, CLIPVisionConfig
 
 from unml.model import (
     ModelConfig,
     LightweightVLM,
-    apply_adapter_state,
     read_checkpoint_payload,
     save_checkpoint,
-    validate_adapter_payload,
 )
 
 
 CLASS_NAMES = ("rose", "tulip", "woman")
-
-
-def _tiny_clip() -> CLIPModel:
-    vision = CLIPVisionConfig(
-        hidden_size=32,
-        intermediate_size=64,
-        num_hidden_layers=2,
-        num_attention_heads=4,
-        image_size=32,
-        patch_size=16,
-        projection_dim=16,
-    )
-    text = CLIPTextConfig(
-        vocab_size=100,
-        hidden_size=32,
-        intermediate_size=64,
-        num_hidden_layers=2,
-        num_attention_heads=4,
-        max_position_embeddings=16,
-        projection_dim=16,
-    )
-    return CLIPModel(
-        CLIPConfig(
-            text_config=text.to_dict(),
-            vision_config=vision.to_dict(),
-            projection_dim=16,
-        )
-    )
 
 
 def _lora_model() -> LightweightVLM:
@@ -70,10 +38,10 @@ class _FakeProcessor:
 
 
 @pytest.fixture
-def registry_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def registry_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tiny_clip_factory):
     monkeypatch.setattr(
         "unml.model.CLIPModel.from_pretrained",
-        lambda *_args, **_kwargs: _tiny_clip(),
+        lambda *_args, **_kwargs: tiny_clip_factory(),
     )
     model = _lora_model()
     baseline_path = tmp_path / "baseline.pt"
@@ -266,45 +234,3 @@ def test_cache_distinguishes_different_images(registry_env) -> None:
         first["baseline_prediction"]
         is not second["baseline_prediction"]
     )
-
-
-def test_apply_adapter_state_atomic_on_unexpected_keys(
-    tmp_path, monkeypatch
-) -> None:
-    monkeypatch.setattr(
-        "unml.model.CLIPModel.from_pretrained",
-        lambda *_args, **_kwargs: _tiny_clip(),
-    )
-    model = _lora_model()
-    reference = copy.deepcopy(model.state_dict())
-
-    poisoned = {"does.not.exist.weight": torch.zeros(2)}
-    with pytest.raises(ValueError, match="unexpected keys"):
-        apply_adapter_state(model, poisoned)
-    for key, value in model.state_dict().items():
-        assert torch.equal(value, reference[key])
-
-
-def test_validate_adapter_payload_reports_field_mismatches(
-    registry_env, tmp_path
-) -> None:
-    env = registry_env
-    from unml.model import ModelConfig as MC
-
-    payload = read_checkpoint_payload(str(env.baseline_path))
-    broken = copy.deepcopy(payload)
-    broken["model_config"]["lora_rank"] = 99
-    reference_cfg = MC(**payload["model_config"])
-    with pytest.raises(ValueError, match="lora_rank"):
-        validate_adapter_payload(broken, reference_cfg, source="broken")
-
-    no_adapter = {"model_config": payload["model_config"]}
-    with pytest.raises(ValueError, match="no adapter weights"):
-        validate_adapter_payload(no_adapter, reference_cfg)
-
-    wrong_name = copy.deepcopy(payload)
-    wrong_name["model_config"]["model_name"] = "other"
-    with pytest.raises(ValueError, match="expected tiny"):
-        validate_adapter_payload(
-            wrong_name, reference_cfg, expected_model_name="tiny"
-        )
