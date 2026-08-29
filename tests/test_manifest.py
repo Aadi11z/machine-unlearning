@@ -50,6 +50,25 @@ def test_manifest_rejects_missing_required_fields(tmp_path) -> None:
     with pytest.raises(ValueError, match="missing fields"):
         write_baseline_manifest(tmp_path / "broken.json", broken)
 
+
+def test_manifest_records_checkpoint_path_relative_to_artifact_root(tmp_path) -> None:
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_dir.mkdir()
+    checkpoint = checkpoint_dir / "finetuned_best.bin"
+    checkpoint.write_bytes(b"checkpoint")
+    manifest = build_baseline_manifest(
+        baseline_id="canonical",
+        dataset="cifar100",
+        split={},
+        model_config={},
+        prompt_contract={},
+        checkpoints={"checkpoint": checkpoint},
+        metrics={},
+        artifact_root=tmp_path,
+    )
+    assert manifest["artifacts"]["checkpoint"]["path"] == "checkpoints/finetuned_best.bin"
+    verify_manifest_artifacts(manifest, root=tmp_path)
+
 def test_manifest_identity_requires_id_and_checkpoint_digest(tmp_path) -> None:
     checkpoint = tmp_path / "checkpoint.bin"
     checkpoint.write_bytes(b"checkpoint")

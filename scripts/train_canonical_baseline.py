@@ -127,6 +127,7 @@ def main() -> None:
             prompt_contract=payload["extra"]["prompt_contract"],
             checkpoints={"checkpoint": checkpoint_path},
             metrics=metrics,
+            artifact_root=output_dir,
         )
         manifest_path = output_dir / "manifest.json"
         write_baseline_manifest(manifest_path, manifest)

@@ -37,7 +37,11 @@ def _patch_loader_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
         "test_all_indices": [0, 1],
     }
     spec = SimpleNamespace(name="cifar10")
-    monkeypatch.setattr(data, "load_split_metadata", lambda *_args: (split, spec, []))
+    monkeypatch.setattr(
+        data,
+        "load_split_metadata",
+        lambda *_args, **_kwargs: (split, spec, []),
+    )
     monkeypatch.setattr(
         data,
         "_load_dataset_pair",
@@ -88,6 +92,39 @@ def test_build_loaders_applies_worker_runtime_options(
     assert loader.persistent_workers
     assert loader.prefetch_factor == 3
     assert not loaders["test_all"].persistent_workers
+
+
+def test_build_loaders_forwards_canonical_final_fit(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_loader_inputs(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        data,
+        "load_split_metadata",
+        lambda *_args, **kwargs: (calls.append(kwargs) or (
+            {
+                "forget_indices": [0],
+                "retain_train_indices": [1],
+                "retain_val_indices": [1],
+                "finetune_train_indices": [0, 1],
+                "test_forget_indices": [0],
+                "test_retain_indices": [1],
+                "test_all_indices": [0, 1],
+            },
+            SimpleNamespace(name="cifar10"),
+            [],
+        )),
+    )
+
+    data.build_loaders(
+        data_dir="unused",
+        split_path="unused",
+        image_processor=IdentityProcessor(),
+        batch_size=2,
+        num_workers=0,
+        canonical_final_fit=True,
+    )
+
+    assert calls == [{"canonical_final_fit": True}]
 
 
 @pytest.mark.parametrize(

@@ -41,13 +41,15 @@ def build_baseline_manifest(
     prompt_contract: Mapping[str, Any],
     checkpoints: Mapping[str, str | Path],
     metrics: Mapping[str, Any],
+    artifact_root: str | Path | None = None,
 ) -> dict[str, Any]:
     if not baseline_id.strip():
         raise ValueError("baseline_id must not be empty")
     if not checkpoints:
         raise ValueError("At least one baseline checkpoint is required")
     artifacts = {
-        role: artifact_record(path) for role, path in sorted(checkpoints.items())
+        role: artifact_record(path, root=artifact_root)
+        for role, path in sorted(checkpoints.items())
     }
     return {
         "schema": BASELINE_MANIFEST_SCHEMA,

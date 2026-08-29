@@ -442,6 +442,7 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
         persistent_workers=cfg.persistent_workers,
         prefetch_factor=cfg.prefetch_factor,
         random_crop=cfg.random_crop,
+        canonical_final_fit=cfg.canonical_final_fit,
     )
 
     model_cfg = ModelConfig(
@@ -697,7 +698,7 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
 
         log_finetune_epoch(cfg.__dict__, epoch + 1, epoch_loss, eval_metrics)
 
-        if eval_metrics["retain_val_acc"] > best_metric:
+        if cfg.canonical_final_fit or eval_metrics["retain_val_acc"] > best_metric:
             best_metric = eval_metrics["retain_val_acc"]
             save_checkpoint(
                 str(best_path),

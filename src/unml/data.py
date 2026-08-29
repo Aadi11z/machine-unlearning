@@ -629,12 +629,18 @@ def build_loaders(
     persistent_workers: bool = False,
     prefetch_factor: int | None = 2,
     random_crop: bool = False,
+    canonical_final_fit: bool = False,
 ) -> Dict[str, DataLoader]:
     if num_workers < 0:
         raise ValueError("num_workers must be non-negative")
     if prefetch_factor is not None and prefetch_factor < 1:
         raise ValueError("prefetch_factor must be at least 1")
-    split, spec, _ = load_split_metadata(split_path, dataset_name)
+    if canonical_final_fit:
+        split, spec, _ = load_split_metadata(
+            split_path, dataset_name, canonical_final_fit=True
+        )
+    else:
+        split, spec, _ = load_split_metadata(split_path, dataset_name)
     train_ds, test_ds = _load_dataset_pair(data_dir, spec.name, download=False)
     eval_collate_fn = make_collate_fn(image_processor)
     train_collate_fn = (
