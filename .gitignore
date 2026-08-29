@@ -24,6 +24,7 @@ research/
 # Tracker Files (experimentation)
 FINETUNE_TRACKER.md
 UNLEARN_EVAL_TRACKER.md
+ISSUES.md
 
 # Shell Files for HPC-BITSHyd Cluster
 sharanga_activation.sh
