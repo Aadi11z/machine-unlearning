@@ -26,9 +26,13 @@ class IdentityProcessor:
     image_std = [1.0]
 
 
-def _patch_loader_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
+def _patch_loader_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    forget_indices: list[int] | None = None,
+) -> None:
     split = {
-        "forget_indices": [0],
+        "forget_indices": [0] if forget_indices is None else forget_indices,
         "retain_train_indices": [1],
         "retain_val_indices": [1],
         "finetune_train_indices": [0, 1],
@@ -69,6 +73,27 @@ def test_build_loaders_disables_worker_only_options_at_zero_workers(
     assert loader.num_workers == 0
     assert not loader.persistent_workers
     assert loader.prefetch_factor is None
+
+
+def test_build_loaders_allows_canonical_empty_forget_split(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_loader_inputs(monkeypatch, forget_indices=[])
+
+    loaders = data.build_loaders(
+        data_dir="unused",
+        split_path="unused",
+        image_processor=IdentityProcessor(),
+        batch_size=2,
+        num_workers=0,
+        canonical_final_fit=True,
+    )
+
+    assert len(loaders["forget"].dataset) == 0
+    assert isinstance(
+        loaders["forget"].sampler,
+        torch.utils.data.SequentialSampler,
+    )
 
 
 def test_build_loaders_applies_worker_runtime_options(

@@ -699,7 +699,7 @@ def build_loaders(
     return {
         "forget": _loader(
             subsets["forget"],
-            shuffle=True,
+            shuffle=len(subsets["forget"]) > 0,
             collate_fn=train_collate_fn,
             reuse_workers=True,
         ),
