@@ -366,6 +366,14 @@ def _evaluate_all(
     return metrics
 
 
+def _should_evaluate_test(
+    cfg: FineTuneConfig, *, epoch: int, epochs_to_run: int
+) -> bool:
+    if not cfg.evaluate_test:
+        return False
+    return not cfg.canonical_final_fit or epoch + 1 == epochs_to_run
+
+
 def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
     if cfg.gradient_accumulation_steps < 1:
         raise ValueError("gradient_accumulation_steps must be at least 1")
@@ -685,7 +693,9 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
             device,
             max_batches=cfg.max_eval_batches,
             non_blocking=cfg.non_blocking,
-            evaluate_test=cfg.evaluate_test,
+            evaluate_test=_should_evaluate_test(
+                cfg, epoch=epoch, epochs_to_run=epochs_to_run
+            ),
         )
         evaluation_seconds += time.perf_counter() - evaluation_started
         final_metrics = eval_metrics

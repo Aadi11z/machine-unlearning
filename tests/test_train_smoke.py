@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from unml.train import _evaluate_all
+from unml.train import FineTuneConfig, _evaluate_all, _should_evaluate_test
 from unml.evaluate import evaluate_zero_shot
 
 
@@ -72,6 +72,34 @@ def test_pilot_evaluation_does_not_touch_test_loaders() -> None:
     assert metrics["retain_val_acc"] == 1.0
     assert metrics["retain_val_macro_accuracy"] == 1.0
     assert metrics["retain_val_loss"] > 0.0
+
+
+def test_canonical_final_fit_evaluates_test_only_on_final_epoch() -> None:
+    cfg = FineTuneConfig(
+        data_dir="data",
+        split_path="split.json",
+        output_dir="outputs",
+        evaluate_test=True,
+        canonical_final_fit=True,
+    )
+
+    decisions = [
+        _should_evaluate_test(cfg, epoch=epoch, epochs_to_run=3)
+        for epoch in range(3)
+    ]
+
+    assert decisions == [False, False, True]
+
+
+def test_standard_training_preserves_per_epoch_test_evaluation() -> None:
+    cfg = FineTuneConfig(
+        data_dir="data",
+        split_path="split.json",
+        output_dir="outputs",
+        evaluate_test=True,
+    )
+
+    assert _should_evaluate_test(cfg, epoch=0, epochs_to_run=3)
 
 
 def test_zero_shot_evaluation_uses_validation_contract() -> None:
