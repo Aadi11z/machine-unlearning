@@ -10,6 +10,9 @@ fi
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -n "${SCRATCH:-}" ]]; then
     SCRATCH_PROJECT="${SCRATCH%/}/machine-unlearning"
+elif [[ -n "${USER:-}" && -d "${UNML_SCRATCH_BASE:-/scratch}/$USER" ]]; then
+    export SCRATCH="${UNML_SCRATCH_BASE:-/scratch}/$USER"
+    SCRATCH_PROJECT="$SCRATCH/machine-unlearning"
 else
     SCRATCH_PROJECT="$REPO_ROOT"
 fi
