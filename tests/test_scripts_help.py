@@ -24,6 +24,8 @@ SCRIPTS = [
     "scripts/run_pipeline.py",
     "scripts/run_lora_pilots.py",
     "scripts/generate_canonical_split.py",
+    "scripts/train_canonical_baseline.py",
+    "scripts/generate_canonical_oracle_split.py",
 ]
 
 

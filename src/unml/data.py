@@ -237,7 +237,10 @@ def get_dataset_spec(dataset_name: str) -> DatasetSpec:
     return DATASET_REGISTRY[normalize_dataset_name(dataset_name)]
 
 def load_split_metadata(
-    split_path: str, requested_dataset: str | None = None
+    split_path: str,
+    requested_dataset: str | None = None,
+    *,
+    canonical_final_fit: bool = False,
 ) -> tuple[Dict[str, object], DatasetSpec, list[str]]:
     from .canonical_split import (
         CANONICAL_CIFAR100_SPLIT_ID,
@@ -245,7 +248,7 @@ def load_split_metadata(
     )
     split = load_json(split_path)
     if split.get("split_id") == CANONICAL_CIFAR100_SPLIT_ID:
-        split = canonical_training_payload(split)
+        split = canonical_training_payload(split, final_fit=canonical_final_fit)
     stored_dataset = normalize_dataset_name(str(split.get("dataset", "cifar10")))
     if (
         requested_dataset is not None

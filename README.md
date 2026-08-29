@@ -13,7 +13,7 @@ Implemented:
 - frozen CLIP backbones with historical post-projection adapters or internal
   vision LoRA;
 - CIFAR-10/CIFAR-100 retain/forget experiment tooling;
-- `retain_only`, `ga_kl`, `counterfactual_rebind`, `entropy_rebind`, `h_tgsd`,
+- `ga_kl`, `counterfactual_rebind`, `entropy_rebind`, `h_tgsd`,
   and `h_tgsd_no_sibling_preservation`;
 - hierarchy-aware metrics, membership-inference attacks, retraining-oracle and
   multi-seed tools, semantic-subspace analysis, and per-image probes;
@@ -85,7 +85,7 @@ uv run --locked python scripts/run_pipeline.py
 uv run --env-file .env unml-interface \
   --offline \
   --device cpu \
-  --baseline-checkpoint outputs/cifar100/rose_selective/baseline_2000/checkpoints/finetuned_best.pt
+  --baseline-checkpoint outputs/cifar100/legacy/rose_selective/baseline_2000/checkpoints/finetuned_best.pt
 ```
 
 Open <http://127.0.0.1:8000>.
@@ -140,9 +140,9 @@ Core modules:
 Current request-specific outputs live under paths such as:
 
 ```text
-outputs/cifar100/flowers_superclass/
-outputs/cifar100/rose_selective/
-outputs/cifar100/jobs/
+outputs/cifar100/legacy/flowers_superclass/
+outputs/cifar100/legacy/rose_selective/
+outputs/cifar100/legacy/jobs/
 ```
 
 The planned immutable baseline will live under

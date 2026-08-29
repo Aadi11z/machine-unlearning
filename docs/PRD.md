@@ -153,7 +153,7 @@ secrets or silently changing the baseline.
 
 | ID | Status | Requirement | Acceptance evidence |
 |---|---|---|---|
-| METHOD-01 | Required | Classify `retain_only`, `ga_kl`, `counterfactual_rebind`, `entropy_rebind`, `h_tgsd`, and `h_tgsd_no_sibling_preservation` as contribution, comparator, ablation, or exploratory. | Every retained method answers a distinct question. |
+| METHOD-01 | Required | Classify `ga_kl`, `counterfactual_rebind`, `entropy_rebind`, `h_tgsd`, and `h_tgsd_no_sibling_preservation` as contribution, comparator, ablation, or exploratory. | Every retained method answers a distinct question. |
 | METHOD-02 | Required | Give each method a versioned schema, one research default, and a small justified search space. | Unknown or irrelevant fields fail and resolved settings are stored. |
 | METHOD-03 | Required | Publish fewer tested presets than research configurations. | UI, API, worker, and documentation expose the same presets. |
 | METHOD-04 | Required | Archive or remove a method only after checking scripts, tests, reports, and artifact reproducibility. | Removal includes a migration note and leaves no unexplained broken references. |

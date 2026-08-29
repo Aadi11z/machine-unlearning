@@ -24,6 +24,7 @@ from .data import (
 from .evaluate import build_class_text_features, evaluate_classification
 from .model import (
     LightweightVLM,
+    ModelConfig,
     load_checkpoint,
     load_recovery_checkpoint,
     precision_context,
@@ -81,6 +82,7 @@ class FineTuneConfig:
     max_eval_batches: int | None = None
     random_crop: bool = False
     evaluate_test: bool = True
+    canonical_final_fit: bool = False
     smoke_mode: bool = False
     training_mode: str = "finetune"
     train_loader_key: str = "finetune_train"
@@ -382,9 +384,16 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     metrics_dir.mkdir(parents=True, exist_ok=True)
 
-    split, dataset_spec, class_names = load_split_metadata(
-        cfg.split_path, cfg.dataset_name
-    )
+    if cfg.canonical_final_fit:
+        split, dataset_spec, class_names = load_split_metadata(
+            cfg.split_path,
+            cfg.dataset_name,
+            canonical_final_fit=True,
+        )
+    else:
+        split, dataset_spec, class_names = load_split_metadata(
+            cfg.split_path, cfg.dataset_name
+        )
     initial_checkpoint_sha256 = None
     source_metrics: Dict[str, Any] | None = None
     if cfg.training_mode == "retrain_oracle":

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import inspect
+import json
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -67,3 +69,160 @@ def test_modal_worker_caps_public_job_batch_size_for_t4_memory() -> None:
     worker_source = inspect.getsource(modal_app.run_unlearn_job.get_raw_f())
     assert modal_app.PUBLIC_JOB_BATCH_SIZE == 16
     assert "batch_size=PUBLIC_JOB_BATCH_SIZE" in worker_source
+
+
+@pytest.fixture
+def modal_worker():
+    pytest.importorskip("modal")
+
+    from worker import modal_app
+
+    return modal_app
+
+
+def _write_canonical_baseline(
+    modal_app,
+    tmp_path: Path,
+    *,
+    baseline_id: str | None = None,
+    checkpoint_prompt_digest: str | None = None,
+    include_checkpoint_prompt_contract: bool = True,
+    manifest_prompt_contract: dict[str, object] | None = None,
+) -> tuple[Path, Path]:
+    import torch
+
+    from unml.baseline import resolve_baseline_paths
+    from unml.manifest import build_baseline_manifest, write_baseline_manifest
+    from unml.prompts import resolve_prompt_contract
+
+    paths = resolve_baseline_paths(
+        tmp_path,
+        baseline_id=modal_app.CANONICAL_BASELINE_ID,
+    )
+    checkpoint = paths.final_fit / "promoted_adapter.pt"
+    checkpoint.parent.mkdir(parents=True)
+    extra = {}
+    canonical_prompt = resolve_prompt_contract("cifar100")
+    if include_checkpoint_prompt_contract:
+        extra["prompt_contract"] = {
+            "digest": checkpoint_prompt_digest or canonical_prompt.digest
+        }
+    prompt_contract = manifest_prompt_contract or {
+        "version": canonical_prompt.version,
+        "digest": canonical_prompt.digest,
+        "template_count": len(canonical_prompt.templates),
+    }
+    torch.save({"model_config": {}, "extra": extra}, checkpoint)
+    manifest = build_baseline_manifest(
+        baseline_id=baseline_id or modal_app.CANONICAL_BASELINE_ID,
+        dataset="cifar100",
+        split={"split_id": "split-v1", "digest": "split-digest"},
+        model_config={},
+        prompt_contract=prompt_contract,
+        checkpoints={"checkpoint": checkpoint},
+        metrics={},
+    )
+    manifest_path = paths.final_fit / modal_app.CANONICAL_BASELINE_MANIFEST_NAME
+    write_baseline_manifest(manifest_path, manifest)
+    return checkpoint, manifest_path
+
+
+def test_modal_worker_selects_only_the_explicit_verified_canonical_baseline(
+    modal_worker, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checkpoint, _ = _write_canonical_baseline(modal_worker, tmp_path)
+    legacy = tmp_path / "baseline_0000" / "checkpoints" / "finetuned_best.pt"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"legacy")
+    monkeypatch.setattr(modal_worker, "ARTIFACT_ROOT", tmp_path)
+
+    assert modal_worker._find_baseline() == checkpoint
+
+
+def test_modal_worker_rejects_missing_canonical_manifest(
+    modal_worker, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(modal_worker, "ARTIFACT_ROOT", tmp_path)
+
+    with pytest.raises(FileNotFoundError, match="manifest missing"):
+        modal_worker._find_baseline()
+
+
+def test_modal_worker_rejects_wrong_canonical_baseline_identity(
+    modal_worker, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_canonical_baseline(modal_worker, tmp_path, baseline_id="other-baseline")
+    monkeypatch.setattr(modal_worker, "ARTIFACT_ROOT", tmp_path)
+
+    with pytest.raises(ValueError, match="Baseline id mismatch"):
+        modal_worker._find_baseline()
+
+
+def test_modal_worker_rejects_tampered_canonical_checkpoint(
+    modal_worker, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checkpoint, _ = _write_canonical_baseline(modal_worker, tmp_path)
+    checkpoint.write_bytes(b"tampered")
+    monkeypatch.setattr(modal_worker, "ARTIFACT_ROOT", tmp_path)
+
+    with pytest.raises(ValueError, match="does not match"):
+        modal_worker._find_baseline()
+
+
+@pytest.mark.parametrize("checkpoint_path", ["../legacy.pt", "/tmp/legacy.pt"])
+def test_modal_worker_rejects_checkpoint_paths_outside_the_canonical_directory(
+    modal_worker,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    checkpoint_path: str,
+) -> None:
+    _, manifest_path = _write_canonical_baseline(modal_worker, tmp_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["artifacts"]["checkpoint"]["path"] = checkpoint_path
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(modal_worker, "ARTIFACT_ROOT", tmp_path)
+
+    with pytest.raises(ValueError, match="must be relative|escapes"):
+        modal_worker._find_baseline()
+
+
+@pytest.mark.parametrize(
+    ("include_checkpoint_prompt_contract", "checkpoint_prompt_digest"),
+    [(False, None), (True, "legacy-prompt")],
+)
+def test_modal_worker_rejects_missing_or_mismatched_checkpoint_prompt_contract(
+    modal_worker,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    include_checkpoint_prompt_contract: bool,
+    checkpoint_prompt_digest: str | None,
+) -> None:
+    _write_canonical_baseline(
+        modal_worker,
+        tmp_path,
+        checkpoint_prompt_digest=checkpoint_prompt_digest,
+        include_checkpoint_prompt_contract=include_checkpoint_prompt_contract,
+    )
+    monkeypatch.setattr(modal_worker, "ARTIFACT_ROOT", tmp_path)
+
+    with pytest.raises(ValueError, match="prompt contract does not match"):
+        modal_worker._find_baseline()
+
+
+def test_modal_worker_rejects_a_legacy_prompt_manifest_and_checkpoint_that_agree(
+    modal_worker, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_canonical_baseline(
+        modal_worker,
+        tmp_path,
+        checkpoint_prompt_digest="legacy-prompt",
+        manifest_prompt_contract={
+            "version": "legacy_single_template",
+            "digest": "legacy-prompt",
+            "template_count": 1,
+        },
+    )
+    monkeypatch.setattr(modal_worker, "ARTIFACT_ROOT", tmp_path)
+
+    with pytest.raises(ValueError, match="Canonical baseline prompt contract mismatch"):
+        modal_worker._find_baseline()

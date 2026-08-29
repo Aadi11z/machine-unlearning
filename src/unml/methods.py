@@ -3,7 +3,6 @@ from __future__ import annotations
 
 
 UNLEARNING_METHODS = (
-    "retain_only",
     "ga_kl",
     "counterfactual_rebind",
     "entropy_rebind",
@@ -17,7 +16,6 @@ H_TGSD_METHODS = frozenset(
 
 
 METHOD_RESEARCH_ROLES = {
-    "retain_only": "comparison",
     "ga_kl": "comparison",
     "counterfactual_rebind": "contribution",
     "entropy_rebind": "exploratory",

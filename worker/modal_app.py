@@ -4,7 +4,9 @@ Setup:
     uv sync --locked --group modal
     modal setup
     modal secret create unml-secret UNML_SECRET_KEY="$UNML_JOB_SECRET"
-    modal volume put unml-artifacts <path-to>/baseline_2000 baseline_2000
+    modal volume put unml-artifacts \
+      <outputs>/cifar100/canonical/cifar100_canonical_v1 \
+      cifar100/canonical/cifar100_canonical_v1
     modal run worker/modal_app.py::prepare_assets
     modal deploy worker/modal_app.py
 
@@ -44,6 +46,13 @@ from fastapi import Request  # noqa: E402
 
 from interface.catalog import validate_job_spec  # noqa: E402
 from interface.remote import SIGNATURE_HEADER, encode_checkpoint, verify_signature  # noqa: E402
+from unml.baseline import CANONICAL_BASELINE_ID, resolve_baseline_paths  # noqa: E402
+from unml.manifest import (  # noqa: E402
+    validate_baseline_manifest,
+    validate_baseline_identity,
+    verify_manifest_artifacts,
+)
+from unml.prompts import resolve_prompt_contract  # noqa: E402
 
 GPU_KIND = os.environ.get("UNML_MODAL_GPU", "T4")
 # These must match the published Modal secret in the active workspace/environment.
@@ -59,6 +68,8 @@ DEFAULT_SEED = 42
 PUBLIC_JOB_BATCH_SIZE = 16
 DATA_DIR = Path("/vol/data")
 SPLIT_ROOT = DATA_DIR / "splits" / "cifar100"
+ARTIFACT_ROOT = Path("/vol/artifacts")
+CANONICAL_BASELINE_MANIFEST_NAME = "manifest.json"
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
@@ -94,16 +105,84 @@ app = modal.App(
 )
 
 
-def _find_baseline() -> Path:
-    matches = sorted(
-        Path("/vol/artifacts").glob("baseline_*/checkpoints/finetuned_best.pt")
-    )
-    if not matches:
-        raise FileNotFoundError(
-            "Upload the configured legacy baseline first: "
-            "modal volume put unml-artifacts <outputs>/cifar100/rose_selective/baseline_2000 baseline_2000"
+def _resolve_manifest_artifact_path(
+    baseline_root: Path, role: str, record: object
+) -> Path:
+    if not isinstance(record, dict):
+        raise ValueError(f"Canonical baseline artifact {role!r} is invalid")
+    relative_path = record.get("path")
+    if not isinstance(relative_path, str) or not relative_path:
+        raise ValueError(f"Canonical baseline artifact {role!r} lacks a path")
+    artifact_path = Path(relative_path)
+    if artifact_path.is_absolute():
+        raise ValueError(
+            f"Canonical baseline artifact {role!r} path must be relative"
         )
-    return matches[0]
+    resolved_root = baseline_root.resolve()
+    resolved_artifact = (resolved_root / artifact_path).resolve()
+    try:
+        resolved_artifact.relative_to(resolved_root)
+    except ValueError as error:
+        raise ValueError(
+            f"Canonical baseline artifact {role!r} escapes its baseline directory"
+        ) from error
+    return resolved_artifact
+
+
+def _find_baseline() -> Path:
+    """Return the one promoted baseline only after provenance verification."""
+    paths = resolve_baseline_paths(
+        ARTIFACT_ROOT,
+        baseline_id=CANONICAL_BASELINE_ID,
+    )
+    baseline_root = paths.final_fit
+    manifest_path = baseline_root / CANONICAL_BASELINE_MANIFEST_NAME
+    if not manifest_path.is_file():
+        raise FileNotFoundError(
+            "Canonical baseline manifest missing at "
+            f"{manifest_path}. Upload {CANONICAL_BASELINE_ID} with its manifest."
+        )
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise ValueError(
+            f"Canonical baseline manifest is invalid JSON: {manifest_path}"
+        ) from error
+    validate_baseline_manifest(manifest)
+    if manifest.get("dataset") != "cifar100":
+        raise ValueError(
+            "Canonical baseline manifest dataset mismatch: "
+            f"expected 'cifar100', received {manifest.get('dataset')!r}"
+        )
+    canonical_prompt = resolve_prompt_contract("cifar100")
+    expected_prompt = {
+        "version": canonical_prompt.version,
+        "digest": canonical_prompt.digest,
+        "template_count": len(canonical_prompt.templates),
+    }
+    manifest_prompt = manifest["prompt_contract"]
+    if not isinstance(manifest_prompt, dict) or any(
+        manifest_prompt.get(key) != value for key, value in expected_prompt.items()
+    ):
+        raise ValueError(
+            "Canonical baseline prompt contract mismatch: "
+            f"expected {expected_prompt!r}, received {manifest_prompt!r}"
+        )
+
+    artifact_paths = {
+        role: _resolve_manifest_artifact_path(baseline_root, role, record)
+        for role, record in manifest["artifacts"].items()
+    }
+    checkpoint = artifact_paths.get("checkpoint") or artifact_paths.get("best")
+    if checkpoint is None:
+        raise ValueError("Canonical baseline manifest lacks a checkpoint artifact")
+    verify_manifest_artifacts(manifest, root=baseline_root)
+    validate_baseline_identity(
+        manifest,
+        baseline_id=CANONICAL_BASELINE_ID,
+        checkpoint_path=checkpoint,
+    )
+    return checkpoint
 
 
 def _split_path(request_name: str, seed: int) -> Path:

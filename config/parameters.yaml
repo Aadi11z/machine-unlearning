@@ -105,14 +105,12 @@ unlearning:
       persistent_workers: true
       non_blocking: true
       methods:
-        - retain_only
         - ga_kl
         - counterfactual_rebind
         - entropy_rebind
         - h_tgsd
         - h_tgsd_no_sibling_preservation
   methods:
-    - retain_only
     - ga_kl
     - counterfactual_rebind
     - entropy_rebind
@@ -168,7 +166,6 @@ study:
   methods:
     - finetuned
     - retrain_oracle
-    - retain_only
     - ga_kl
     - counterfactual_rebind
     - entropy_rebind
@@ -176,7 +173,6 @@ study:
     - h_tgsd_no_sibling_preservation
   primary_method: h_tgsd
   baseline_methods:
-    - retain_only
     - ga_kl
     - counterfactual_rebind
     - entropy_rebind

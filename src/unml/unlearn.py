@@ -17,7 +17,6 @@ from transformers import CLIPImageProcessor, CLIPTokenizer
 from .data import (
     build_canonical_prompt_inputs,
     build_loaders,
-    build_text_inputs,
     cycle_loader,
     load_split_metadata,
     validate_checkpoint_dataset,
@@ -506,37 +505,32 @@ def run_unlearning(cfg: UnlearnConfig) -> Dict[str, str | float]:
                         pixel_values=batch_r["pixel_values"],
                         class_text_features=student_text_features,
                     )
-                if cfg.method == "retain_only":
-                    loss = F.cross_entropy(logits_r, batch_r["labels"])
+                with torch.no_grad():
+                    t_logits_r = teacher.class_logits_from_text_features(
+                        pixel_values=batch_r["pixel_values"],
+                        class_text_features=teacher_text_features,
+                    )
+                retain_kl = _kl_div(logits_r, t_logits_r, cfg.kl_temperature)
+                batch_f = move_to_device(
+                    next(forget_iter),
+                    device,
+                    non_blocking=cfg.non_blocking,
+                )
+                if student_text_features is None:
+                    logits_f = model.class_logits(
+                        pixel_values=batch_f["pixel_values"],
+                        class_input_ids=class_text_inputs["input_ids"],
+                        class_attention_mask=class_text_inputs[
+                            "attention_mask"
+                        ],
+                    )
                 else:
-                    with torch.no_grad():
-                        t_logits_r = teacher.class_logits_from_text_features(
-                            pixel_values=batch_r["pixel_values"],
-                            class_text_features=teacher_text_features,
-                        )
-                    retain_kl = _kl_div(
-                        logits_r, t_logits_r, cfg.kl_temperature
+                    logits_f = model.class_logits_from_text_features(
+                        pixel_values=batch_f["pixel_values"],
+                        class_text_features=student_text_features,
                     )
-                    batch_f = move_to_device(
-                        next(forget_iter),
-                        device,
-                        non_blocking=cfg.non_blocking,
-                    )
-                    if student_text_features is None:
-                        logits_f = model.class_logits(
-                            pixel_values=batch_f["pixel_values"],
-                            class_input_ids=class_text_inputs["input_ids"],
-                            class_attention_mask=class_text_inputs[
-                                "attention_mask"
-                            ],
-                        )
-                    else:
-                        logits_f = model.class_logits_from_text_features(
-                            pixel_values=batch_f["pixel_values"],
-                            class_text_features=student_text_features,
-                        )
 
-            if cfg.method in H_TGSD_METHODS or cfg.method == "retain_only":
+            if cfg.method in H_TGSD_METHODS:
                 pass
             elif cfg.method == "ga_kl":
                 loss = _ga_kl_objective(

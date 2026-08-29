@@ -264,7 +264,9 @@ def validate_canonical_cifar100_dataset_labels(
         raise ValueError("Canonical split test labels do not match the loaded dataset")
 
 
-def canonical_training_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+def canonical_training_payload(
+    payload: Mapping[str, Any], *, final_fit: bool = False
+) -> dict[str, Any]:
     """Adapt a validated canonical split to the existing loader contract.
 
     The legacy loader expects retain/forget/test keys. A canonical baseline has
@@ -291,7 +293,11 @@ def canonical_training_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         "forget_indices": [],
         "retain_train_indices": development_train_indices,
         "retain_val_indices": development_val_indices,
-        "finetune_train_indices": development_train_indices,
+        "finetune_train_indices": (
+            sorted(development_train_indices + development_val_indices)
+            if final_fit
+            else development_train_indices
+        ),
         "test_forget_indices": [],
         "test_retain_indices": official_test_indices,
         "test_all_indices": official_test_indices,

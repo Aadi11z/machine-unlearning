@@ -84,7 +84,7 @@ def main() -> None:
             dataset_name,
             "unlearning",
             "methods",
-            ("retain_only", "ga_kl", "counterfactual_rebind"),
+            ("ga_kl", "counterfactual_rebind"),
         )
         names.append("finetuned")
         checkpoints.append(

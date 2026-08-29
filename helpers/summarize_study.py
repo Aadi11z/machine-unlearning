@@ -42,7 +42,6 @@ DEFAULT_METRICS = (
 DEFAULT_METHODS = (
     "finetuned",
     "retrain_oracle",
-    "retain_only",
     "ga_kl",
     "counterfactual_rebind",
     "entropy_rebind",
@@ -148,7 +147,6 @@ def main() -> None:
         runtime_cfg,
         ("study", "baseline_methods"),
         (
-            "retain_only",
             "ga_kl",
             "counterfactual_rebind",
             "entropy_rebind",

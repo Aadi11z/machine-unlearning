@@ -13,7 +13,8 @@ except ModuleNotFoundError:
 
 configure_runtime()
 
-from unml.canonical_split import generate_canonical_cifar100_split
+from unml.baseline import resolve_baseline_paths  # noqa: E402
+from unml.canonical_split import generate_canonical_cifar100_split  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -38,6 +39,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--run-id",
+        type=str,
+        default=None,
+        help=(
+            "Put the split under canonical/development/<run-id> so repeated "
+            "runs cannot overwrite one another"
+        ),
+    )
+    parser.add_argument(
         "--download",
         action="store_true",
         help="Download CIFAR-100 if it is not already present in --data-dir",
@@ -52,13 +62,19 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    output_path = args.output_path
+    if args.run_id is not None:
+        run_paths = resolve_baseline_paths(REPO_ROOT / "outputs", run_id=args.run_id)
+        output_path = (
+            run_paths.development / "splits" / "cifar100_canonical_development_v1.json"
+        )
     payload = generate_canonical_cifar100_split(
         data_dir=args.data_dir,
-        output_path=args.output_path,
+        output_path=output_path,
         download=args.download,
         overwrite=args.overwrite,
     )
-    print(f"[canonical-split] path={args.output_path}")
+    print(f"[canonical-split] path={output_path}")
     print(f"[canonical-split] split_id={payload['split_id']}")
     print(f"[canonical-split] digest={payload['digest']}")
     print("[canonical-split] development=45000 train / 5000 validation")

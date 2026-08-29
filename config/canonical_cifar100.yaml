@@ -1,0 +1,28 @@
+# Contract for canonical CIFAR-100 development and pilot runs.
+# Do not use this file for request-specific legacy experiments.
+canonical:
+  dataset: cifar100
+  model_name: openai/clip-vit-base-patch16
+  adapter_type: vision_lora
+  lora_rank: 8
+  lora_alpha: 8.0
+  lora_layers: all
+  lora_targets:
+    - q_proj
+    - v_proj
+  train_logit_scale: false
+  precision: bf16
+  gradient_checkpointing: true
+  batch_size: 64
+  gradient_accumulation_steps: 2
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2
+  non_blocking: true
+  lr: 0.003
+  weight_decay: 0.0001
+  epochs: 10
+  max_train_steps: -1
+  seed: 42
+  evaluate_test: false
