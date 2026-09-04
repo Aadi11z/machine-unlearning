@@ -97,7 +97,6 @@ def _write_canonical_baseline(
 
     paths = resolve_baseline_paths(
         tmp_path,
-        baseline_id=modal_app.CANONICAL_BASELINE_ID,
     )
     checkpoint = paths.final_fit / "promoted_adapter.pt"
     checkpoint.parent.mkdir(parents=True)
@@ -114,7 +113,7 @@ def _write_canonical_baseline(
     }
     torch.save({"model_config": {}, "extra": extra}, checkpoint)
     manifest = build_baseline_manifest(
-        baseline_id=baseline_id or modal_app.CANONICAL_BASELINE_ID,
+        baseline_id=baseline_id or "baseline-v1",
         dataset="cifar100",
         split={"split_id": "split-v1", "digest": "split-digest"},
         model_config={},
@@ -122,7 +121,7 @@ def _write_canonical_baseline(
         checkpoints={"checkpoint": checkpoint},
         metrics={},
     )
-    manifest_path = paths.final_fit / modal_app.CANONICAL_BASELINE_MANIFEST_NAME
+    manifest_path = paths.final_fit / "manifest.json"
     write_baseline_manifest(manifest_path, manifest)
     return checkpoint, manifest_path
 
@@ -137,6 +136,25 @@ def test_modal_worker_selects_only_the_explicit_verified_canonical_baseline(
     monkeypatch.setattr(modal_worker, "ARTIFACT_ROOT", tmp_path)
 
     assert modal_worker._find_baseline() == checkpoint
+
+
+def test_modal_worker_rejects_a_request_for_another_baseline(modal_worker) -> None:
+    reference = {
+        "checkpoint": Path("/tmp/canonical.pt"),
+        "baseline_id": "baseline-v1",
+        "baseline_sha256": "a" * 64,
+    }
+    with pytest.raises(ValueError, match="baseline_sha256"):
+        modal_worker._validate_requested_baseline(
+            {
+                "baseline_id": "baseline-v1",
+                "baseline_sha256": "b" * 64,
+            },
+            reference,
+        )
+    modal_worker._validate_baseline_spec(
+        {"baseline_id": "any-manifest-id", "baseline_sha256": "a" * 64}
+    )
 
 
 def test_modal_worker_rejects_missing_canonical_manifest(
@@ -154,8 +172,7 @@ def test_modal_worker_rejects_wrong_canonical_baseline_identity(
     _write_canonical_baseline(modal_worker, tmp_path, baseline_id="other-baseline")
     monkeypatch.setattr(modal_worker, "ARTIFACT_ROOT", tmp_path)
 
-    with pytest.raises(ValueError, match="Baseline id mismatch"):
-        modal_worker._find_baseline()
+    assert modal_worker._find_baseline().is_file()
 
 
 def test_modal_worker_rejects_tampered_canonical_checkpoint(
@@ -182,7 +199,7 @@ def test_modal_worker_rejects_checkpoint_paths_outside_the_canonical_directory(
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     monkeypatch.setattr(modal_worker, "ARTIFACT_ROOT", tmp_path)
 
-    with pytest.raises(ValueError, match="must be relative|escapes"):
+    with pytest.raises(ValueError, match="must stay within|escapes"):
         modal_worker._find_baseline()
 
 
@@ -224,5 +241,5 @@ def test_modal_worker_rejects_a_legacy_prompt_manifest_and_checkpoint_that_agree
     )
     monkeypatch.setattr(modal_worker, "ARTIFACT_ROOT", tmp_path)
 
-    with pytest.raises(ValueError, match="Canonical baseline prompt contract mismatch"):
+    with pytest.raises(ValueError, match="prompt contract does not match"):
         modal_worker._find_baseline()

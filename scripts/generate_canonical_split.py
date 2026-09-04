@@ -43,7 +43,7 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help=(
-            "Put the split under canonical/development/<run-id> so repeated "
+            "Put the split under cifar100/development/<run-id> so repeated "
             "runs cannot overwrite one another"
         ),
     )

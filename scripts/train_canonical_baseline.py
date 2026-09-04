@@ -120,7 +120,7 @@ def main() -> None:
 
         metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
         manifest = build_baseline_manifest(
-            baseline_id="cifar100_canonical_v1",
+            baseline_id=args.run_id,
             dataset="cifar100",
             split=split,
             model_config=payload["model_config"],
