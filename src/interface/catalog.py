@@ -8,6 +8,7 @@ from typing import Any, Mapping
 
 from unml.baseline import BaselineReference, configured_baseline_manifest, resolve_baseline
 from unml.manifest import (
+    baseline_checkpoint_record,
     sha256_file,
     validate_baseline_identity,
     verify_retraining_oracle_canonical_contract,
@@ -156,9 +157,7 @@ class ArtifactCatalog:
                 or stored_contract.get("digest") != contract.digest
             ):
                 raise ValueError("Baseline prompt contract is not supported")
-            record = manifest["artifacts"].get("checkpoint")
-            if not isinstance(record, Mapping):
-                raise ValueError("Baseline manifest lacks checkpoint artifact")
+            baseline_checkpoint_record(manifest)
             validate_baseline_identity(
                 manifest,
                 baseline_id=baseline.baseline_id,

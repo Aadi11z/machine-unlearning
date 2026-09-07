@@ -14,7 +14,9 @@ from unml.manifest import (
 from unml.prompts import resolve_prompt_contract
 
 
-def _canonical_fixture(output_root: Path) -> tuple[Path, dict]:
+def _canonical_fixture(
+    output_root: Path, *, checkpoint_role: str = "checkpoint"
+) -> tuple[Path, dict]:
     root = output_root / "cifar100" / "baseline"
     checkpoint = root / "checkpoints" / "finetuned_best.bin"
     checkpoint.parent.mkdir(parents=True)
@@ -26,7 +28,7 @@ def _canonical_fixture(output_root: Path) -> tuple[Path, dict]:
         split={"split_id": "canonical-split", "digest": "split-digest"},
         model_config={"model_name": "clip", "adapter_type": "vision_lora"},
         prompt_contract={"version": contract.version, "digest": contract.digest},
-        checkpoints={"checkpoint": checkpoint},
+        checkpoints={checkpoint_role: checkpoint},
         metrics={
             "class_names": [f"class-{index}" for index in range(100)],
             "final_metrics": {"test_all_acc": 0.8781},
@@ -60,6 +62,19 @@ def test_catalog_resolves_only_verified_canonical_baseline(tmp_path: Path) -> No
         "baseline_sha256": sha256_file(canonical),
     }
     assert len(catalog.baseline_class_names()) == 100
+
+
+def test_catalog_resolves_final_fit_checkpoint_role(tmp_path: Path) -> None:
+    final_checkpoint, _ = _canonical_fixture(
+        tmp_path / "outputs", checkpoint_role="final_checkpoint"
+    )
+
+    catalog = ArtifactCatalog(output_root=tmp_path / "outputs")
+
+    assert catalog.baseline_checkpoint() == final_checkpoint
+    assert catalog.baseline_manifest()["artifacts"]["final_checkpoint"]["path"].endswith(
+        "finetuned_best.bin"
+    )
 
 
 def test_legacy_baseline_override_uses_dataset_vocabulary(tmp_path: Path) -> None:

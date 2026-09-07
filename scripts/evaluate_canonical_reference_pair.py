@@ -25,7 +25,11 @@ from unml.data import (  # noqa: E402
     validate_checkpoint_dataset,
 )
 from unml.evaluate import build_class_text_features, evaluate_classification  # noqa: E402
-from unml.manifest import sha256_file, verify_manifest_artifacts  # noqa: E402
+from unml.manifest import (  # noqa: E402
+    baseline_checkpoint_record,
+    sha256_file,
+    verify_manifest_artifacts,
+)
 from unml.model import load_checkpoint  # noqa: E402
 from unml.utils import get_device, save_json  # noqa: E402
 
@@ -79,9 +83,8 @@ def main() -> None:
         prefetch_factor=2,
     )
     device = get_device(args.device)
-    canonical_checkpoint = (
-        canonical_dir / canonical["artifacts"]["checkpoint"]["path"]
-    )
+    _, checkpoint_record = baseline_checkpoint_record(canonical)
+    canonical_checkpoint = canonical_dir / str(checkpoint_record["path"])
     oracle_checkpoint = oracle_dir / "checkpoints" / "retrained_best.pt"
     evaluations = {
         "canonical": _evaluate_checkpoint(

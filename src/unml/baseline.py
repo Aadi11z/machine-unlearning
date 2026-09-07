@@ -7,7 +7,11 @@ import os
 import re
 from typing import Any, Mapping
 
-from .manifest import sha256_file, verify_manifest_artifacts
+from .manifest import (
+    baseline_checkpoint_record,
+    sha256_file,
+    verify_manifest_artifacts,
+)
 
 
 BASELINE_MANIFEST_ENV = "UNML_BASELINE_MANIFEST"
@@ -66,10 +70,7 @@ def resolve_baseline(
     if not isinstance(manifest, dict) or manifest.get("dataset") != dataset:
         raise ValueError("Baseline manifest dataset does not match configuration")
     verify_manifest_artifacts(manifest, root=manifest_path.parent)
-    artifacts = manifest.get("artifacts", {})
-    checkpoint = artifacts.get("final_checkpoint", artifacts.get("checkpoint"))
-    if not isinstance(checkpoint, Mapping):
-        raise ValueError("Baseline manifest lacks a checkpoint artifact")
+    _, checkpoint = baseline_checkpoint_record(manifest)
     final_checkpoint = _safe_relative(
         manifest_path.parent, str(checkpoint.get("path", "")), field="checkpoint path"
     )

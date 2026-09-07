@@ -13,6 +13,7 @@ from .model import read_checkpoint_payload
 
 BASELINE_MANIFEST_SCHEMA = "unml-baseline-manifest-v1"
 RETRAINING_ORACLE_MANIFEST_SCHEMA = "unml-retraining-oracle-manifest-v1"
+BASELINE_CHECKPOINT_ROLES = ("final_checkpoint", "checkpoint")
 
 
 def sha256_file(path: str | Path) -> str:
@@ -82,6 +83,26 @@ def validate_baseline_manifest(manifest: Mapping[str, Any]) -> None:
     for role, record in manifest["artifacts"].items():
         if not isinstance(record, Mapping) or not record.get("sha256"):
             raise ValueError(f"Artifact {role!r} lacks a sha256 digest")
+    baseline_checkpoint_record(manifest)
+
+
+def baseline_checkpoint_record(
+    manifest: Mapping[str, Any],
+) -> tuple[str, Mapping[str, Any]]:
+    """Select the canonical checkpoint role shared by every baseline consumer."""
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, Mapping):
+        raise ValueError("Baseline manifest must contain artifacts")
+    for role in BASELINE_CHECKPOINT_ROLES:
+        if role not in artifacts:
+            continue
+        record = artifacts[role]
+        if not isinstance(record, Mapping):
+            raise ValueError(f"Baseline artifact {role!r} must be an artifact record")
+        return role, record
+    raise ValueError(
+        "Baseline manifest lacks final_checkpoint or legacy checkpoint artifact"
+    )
 
 
 def verify_manifest_artifacts(
@@ -307,7 +328,7 @@ def verify_retraining_oracle_canonical_contract(
     """Require an oracle to match the exact canonical release and schedule."""
     canonical_contract = oracle.get("canonical_contract", {})
     comparison = oracle.get("comparison", {})
-    canonical_checkpoint = canonical["artifacts"].get("checkpoint")
+    _, canonical_checkpoint = baseline_checkpoint_record(canonical)
     mismatches: dict[str, Any] = {}
     expected_pairs = {
         "baseline_id": (canonical.get("baseline_id"), canonical_contract.get("baseline_id")),
@@ -411,11 +432,7 @@ def validate_baseline_identity(
             f"Baseline id mismatch: expected {manifest['baseline_id']!r}, "
             f"received {baseline_id!r}"
         )
-    checkpoint_record = manifest["artifacts"].get("checkpoint") or manifest[
-        "artifacts"
-    ].get("best")
-    if not isinstance(checkpoint_record, Mapping):
-        raise ValueError("Baseline manifest lacks a checkpoint artifact")
+    _, checkpoint_record = baseline_checkpoint_record(manifest)
     actual_digest = sha256_file(checkpoint_path)
     if actual_digest != checkpoint_record.get("sha256"):
         raise ValueError(

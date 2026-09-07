@@ -7,11 +7,13 @@ import pytest
 
 from unml.manifest import (
     artifact_record,
+    baseline_checkpoint_record,
     build_baseline_manifest,
     build_retraining_oracle_manifest,
     sha256_file,
     validate_baseline_identity,
     verify_manifest_artifacts,
+    verify_retraining_oracle_canonical_contract,
     verify_retraining_oracle_manifest,
     write_baseline_manifest,
     write_retraining_oracle_manifest,
@@ -27,7 +29,7 @@ def test_baseline_manifest_round_trip_and_hash_verification(tmp_path) -> None:
         split={"split_id": "split-v1", "digest": "split-hash"},
         model_config={"model_name": "clip", "adapter_type": "vision_lora"},
         prompt_contract={"version": "openai_cifar100_v1", "digest": "prompt-hash"},
-        checkpoints={"best": checkpoint},
+        checkpoints={"checkpoint": checkpoint},
         metrics={"retain_val_acc": 0.8},
     )
     path = write_baseline_manifest(tmp_path / "manifest.json", manifest)
@@ -48,7 +50,7 @@ def test_manifest_rejects_missing_required_fields(tmp_path) -> None:
         split={},
         model_config={},
         prompt_contract={},
-        checkpoints={"best": checkpoint},
+        checkpoints={"checkpoint": checkpoint},
         metrics={},
     )
     broken = copy.deepcopy(manifest)
@@ -84,7 +86,7 @@ def test_manifest_identity_requires_id_and_checkpoint_digest(tmp_path) -> None:
         split={},
         model_config={},
         prompt_contract={},
-        checkpoints={"best": checkpoint},
+        checkpoints={"checkpoint": checkpoint},
         metrics={},
     )
     validate_baseline_identity(
@@ -96,6 +98,61 @@ def test_manifest_identity_requires_id_and_checkpoint_digest(tmp_path) -> None:
         validate_baseline_identity(
             manifest, baseline_id="wrong", checkpoint_path=checkpoint
         )
+
+
+def test_baseline_checkpoint_record_prefers_final_role() -> None:
+    legacy = {"path": "checkpoints/development.pt", "sha256": "legacy"}
+    final = {"path": "checkpoints/final.pt", "sha256": "final"}
+
+    role, record = baseline_checkpoint_record(
+        {"artifacts": {"checkpoint": legacy, "final_checkpoint": final}}
+    )
+
+    assert role == "final_checkpoint"
+    assert record is final
+
+
+def test_baseline_checkpoint_record_rejects_non_contract_roles() -> None:
+    with pytest.raises(ValueError, match="final_checkpoint or legacy checkpoint"):
+        baseline_checkpoint_record(
+            {"artifacts": {"best": {"path": "best.pt", "sha256": "best"}}}
+        )
+
+
+def test_oracle_contract_accepts_final_fit_checkpoint_role(tmp_path) -> None:
+    canonical_manifest_path = tmp_path / "manifest.json"
+    canonical_manifest_path.write_text("{}", encoding="utf-8")
+    prompt = {"digest": "prompt-digest"}
+    model_config = {"model_name": "clip", "adapter_type": "vision_lora"}
+    canonical = {
+        "baseline_id": "baseline-final-v1",
+        "artifacts": {"final_checkpoint": {"sha256": "final-checkpoint-hash"}},
+        "prompt_contract": prompt,
+        "split": {"digest": "split-digest"},
+        "model_config": model_config,
+        "metrics": {},
+    }
+    oracle = {
+        "canonical_contract": {
+            "baseline_id": "baseline-final-v1",
+            "manifest_sha256": sha256_file(canonical_manifest_path),
+            "prompt_digest": "prompt-digest",
+            "split_digest": "split-digest",
+        },
+        "prompt_contract": prompt,
+        "model_config": model_config,
+        "metrics": {},
+        "comparison": {
+            "baseline_id": "baseline-final-v1",
+            "checkpoints": {"canonical_sha256": "final-checkpoint-hash"},
+        },
+    }
+
+    verify_retraining_oracle_canonical_contract(
+        oracle,
+        canonical,
+        canonical_manifest_path=canonical_manifest_path,
+    )
 
 
 def test_retraining_oracle_manifest_binds_all_artifacts(
