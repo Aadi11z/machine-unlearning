@@ -27,6 +27,45 @@
     </div>
   </header>
 
+  <section class="card reference-card">
+    <h2>Canonical reference models</h2>
+    <p class="muted">These are training references, separate from the unlearning
+    methods below. The canonical model was trained on all CIFAR-100 training
+    examples; each retraining oracle starts from a fresh LoRA initialization and
+    is trained without its target samples.</p>
+    {% if references %}
+      {% for reference in references %}
+      <div class="reference-header">
+        <div>
+          <strong>{{ reference.oracle_id }}</strong>
+          <span class="muted"> · {{ reference.request_name.replace("_", " ") }}</span>
+        </div>
+        <span class="reference-badge">verified manifest</span>
+      </div>
+      <p class="muted small">Target classes: {{ reference.forget_class_names|join(", ") }}</p>
+      <div class="reference-table-wrap">
+        <table class="topk-table reference-table">
+          <thead>
+            <tr><th>Held-out partition</th><th>Canonical</th><th>Retraining oracle</th><th>Oracle delta</th></tr>
+          </thead>
+          <tbody>
+            {% for row in reference.metric_rows %}
+            <tr>
+              <td>{{ row.label }}</td><td>{{ row.canonical }}</td>
+              <td>{{ row.oracle }}</td><td>{{ row.delta }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <p class="muted small">Both checkpoints were evaluated on these identical
+      held-out partitions using the canonical 18-prompt contract.</p>
+      {% endfor %}
+    {% else %}
+      <div class="banner warn-banner">No verified retraining-oracle manifest was found.</div>
+    {% endif %}
+  </section>
+
   <section class="card">
     <h2><span class="step-num">1</span> Pick the class to forget</h2>
     <p class="muted">Classes are grouped by their CIFAR-100 superclass. The four

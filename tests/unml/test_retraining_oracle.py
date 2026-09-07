@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -173,3 +174,41 @@ def test_oracle_contract_fails_before_model_startup(
 
     with pytest.raises(ValueError, match="differs"):
         run_finetuning(cfg)
+
+
+def test_oracle_api_records_effective_evaluation_policy(monkeypatch) -> None:
+    cfg = _oracle_config(evaluate_test=True)
+
+    def inspect_effective_config(effective):
+        assert effective.evaluate_test is False
+        assert effective is not cfg
+        raise RuntimeError("inspected before model startup")
+
+    monkeypatch.setattr(train_module, "_validate_training_mode", inspect_effective_config)
+    with pytest.raises(RuntimeError, match="inspected before model startup"):
+        run_finetuning(cfg)
+    assert cfg.evaluate_test is True
+
+
+def test_oracle_cli_disables_test_evaluation(tmp_path, monkeypatch) -> None:
+    from scripts import train_vlm
+
+    metrics = tmp_path / "source.json"
+    metrics.write_text(json.dumps({"global_steps": 10}), encoding="utf-8")
+    monkeypatch.setattr(
+        sys, "argv",
+        [
+            "train_vlm.py", "--oracle", "--dataset", "cifar100",
+            "--source-metrics", str(metrics),
+            "--initial-checkpoint", str(tmp_path / "base_init.pt"),
+        ],
+    )
+    captured = []
+    monkeypatch.setattr(train_module, "run_finetuning", lambda cfg: captured.append(cfg))
+    train_vlm.main()
+    assert len(captured) == 1
+    cfg = captured[0]
+    assert cfg.training_mode == "retrain_oracle"
+    assert cfg.train_loader_key == "retain_train"
+    assert cfg.evaluate_test is False
+    assert cfg.target_optimizer_steps == 10

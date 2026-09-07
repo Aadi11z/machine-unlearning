@@ -107,23 +107,23 @@ def test_parameters_yaml_switches_complete_dataset_profile(monkeypatch) -> None:
 
     assert dataset_name == "cifar100"
     assert split_path == (
-        "outputs/cifar100/flowers_superclass/splits/"
+        "outputs/cifar100/development/flowers_superclass/splits/"
         "flowers_superclass_split.json"
     )
     assert resolve_forget_classes(None, payload, dataset_name) == "54,62,70,82,92"
     assert resolve_output_root(None, payload, dataset_name).as_posix() == (
-        "outputs/cifar100/flowers_superclass"
+        "outputs/cifar100/development/flowers_superclass"
     )
     assert resolve_stage_output_dir(
         None, payload, dataset_name, "training"
-    ).as_posix() == "outputs/cifar100/flowers_superclass/finetune"
+    ).as_posix() == "outputs/cifar100/development/flowers_superclass/finetune"
 
     rose_dataset, rose_split = resolve_dataset_and_split_path(
         None, None, payload, "rose_selective"
     )
     assert rose_dataset == "cifar100"
     assert rose_split == (
-        "outputs/cifar100/rose_selective/splits/rose_selective_split.json"
+        "outputs/cifar100/development/rose_selective/splits/rose_selective_split.json"
     )
     assert (
         resolve_forget_classes(
@@ -214,13 +214,13 @@ def test_environment_redirects_heavy_artifacts(monkeypatch) -> None:
         "/workspace/data"
     )
     assert split_path == (
-        "/workspace/outputs/cifar100/flowers_superclass/"
+        "/workspace/outputs/cifar100/development/flowers_superclass/"
         "splits/flowers_superclass_split.json"
     )
     assert resolve_stage_output_dir(
         None, payload, dataset_name, "unlearning"
     ).as_posix() == (
-        "/workspace/outputs/cifar100/flowers_superclass/unlearning"
+        "/workspace/outputs/cifar100/development/flowers_superclass/unlearning"
     )
 
 

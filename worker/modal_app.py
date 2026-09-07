@@ -5,8 +5,8 @@ Setup:
     modal setup
     modal secret create unml-secret UNML_SECRET_KEY="$UNML_JOB_SECRET"
     modal volume put unml-artifacts \
-      <outputs>/cifar100/canonical \
-      cifar100/canonical
+      <outputs>/cifar100/baseline \
+      cifar100/baseline
     modal run worker/modal_app.py::prepare_assets
     modal deploy worker/modal_app.py
 

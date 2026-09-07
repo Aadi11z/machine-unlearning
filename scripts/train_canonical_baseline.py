@@ -37,7 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config",
         type=Path,
-        default=REPO_ROOT / "config" / "canonical_cifar100.yaml",
+        default=REPO_ROOT / "config" / "parameters.yaml",
     )
     parser.add_argument("--device", default=None)
     parser.add_argument("--precision", choices=("fp32", "fp16", "bf16"), default=None)
@@ -113,7 +113,7 @@ def main() -> None:
     print(f"[canonical-train] run_id={args.run_id} output={output_dir}")
     result = run_finetuning(cfg)
     if args.final_fit:
-        checkpoint_path = Path(str(result["best_checkpoint"]))
+        checkpoint_path = Path(str(result["final_checkpoint"]))
         payload = read_checkpoint_payload(checkpoint_path)
         metrics_path = Path(str(result["metrics_path"]))
         import json
@@ -125,7 +125,7 @@ def main() -> None:
             split=split,
             model_config=payload["model_config"],
             prompt_contract=payload["extra"]["prompt_contract"],
-            checkpoints={"checkpoint": checkpoint_path},
+            checkpoints={"final_checkpoint": checkpoint_path},
             metrics=metrics,
             artifact_root=output_dir,
         )

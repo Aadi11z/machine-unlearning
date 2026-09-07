@@ -268,12 +268,22 @@ def _catalog_with_baseline(tmp_path: Path, baseline_path: Path):
     from interface.catalog import ArtifactCatalog
 
     candidate_dir = (
-        tmp_path / "rose_selective" / "unlearn_ga_kl_200" / "checkpoints"
+        tmp_path
+        / "archive"
+        / "legacy"
+        / "rose_selective"
+        / "unlearn_ga_kl_200"
+        / "checkpoints"
     )
     candidate_dir.mkdir(parents=True, exist_ok=True)
     (candidate_dir / "unlearn_ga_kl.pt").write_bytes(b"placeholder")
     comparison_csv = (
-        tmp_path / "rose_selective" / "eval_compare_x" / "comparison.csv"
+        tmp_path
+        / "archive"
+        / "legacy"
+        / "rose_selective"
+        / "eval_compare_x"
+        / "comparison.csv"
     )
     comparison_csv.parent.mkdir(parents=True, exist_ok=True)
     comparison_csv.write_text("model,target_test_acc\n")

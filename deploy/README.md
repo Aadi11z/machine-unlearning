@@ -2,22 +2,20 @@
 
 ## Status boundary
 
-The commands below deploy the current legacy `baseline_2000` demonstration
-path. They are useful for integration testing but do not satisfy the canonical
-baseline requirements in `docs/PLAN.md`: the worker still discovers a
-`baseline_*` directory, and the Docker image copies request-local artifacts.
+The commands below deploy the interface and Modal worker with a separately
+mounted baseline package. Set `UNML_BASELINE_MANIFEST` in each environment to
+that environment's `cifar100/baseline/manifest.json`.
 
-Do not present this deployment as the canonical research release. PLAN Phase 2
-must first promote `cifar100_canonical_v1`, require its manifest id/hash in the
-worker and interface, and update the Docker/Volume artifact paths together.
+The interface and worker each verify the configured manifest once at startup;
+the worker cannot use the interface's local filesystem path.
 
 ## Hugging Face Space (web app, free CPU tier)
 
 1. Create a Docker Space (public), e.g. `<user>/unml-interface`.
 2. Push the repository, using `deploy/Dockerfile` as the Space Dockerfile
    (copy its contents to the Space root `Dockerfile`, or set the repo layout
-   to match). The current image bakes in the legacy `baseline_2000` checkpoint,
-   request split metadata, and a historical comparison CSV.
+   to match). The current image bakes in the verified baseline package plus a
+   historical/precomputed rose candidate and comparison CSV.
 3. Required Space secrets:
    - `UNML_MODAL_URL`, `UNML_JOB_SECRET`: dispatch unlearning jobs to the
      Modal worker. The Docker entry point refuses to start without both, so a
@@ -38,8 +36,7 @@ modal volume create unml-data
 modal volume create unml-hf
 modal volume create unml-artifacts
 modal secret create unml-secret UNML_SECRET_KEY="$UNML_JOB_SECRET"
-# Legacy integration artifact only; replace after canonical promotion.
-modal volume put unml-artifacts outputs/cifar100/rose_selective/baseline_2000 baseline_2000
+modal volume put unml-artifacts outputs/cifar100/baseline cifar100/baseline
 modal run worker/modal_app.py::prepare_assets
 modal deploy worker/modal_app.py
 ```

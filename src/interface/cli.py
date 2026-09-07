@@ -74,14 +74,12 @@ def main() -> None:
             "No fine-tuned baseline checkpoint found under "
             f"{output_root}. Pass --baseline-checkpoint explicitly."
         )
+    baseline_identity = catalog.baseline_identity()
 
     def registry_loader():
         from interface.registry import ModelRegistry
-        from unml.data import load_split_metadata
 
-        _, _, class_names = load_split_metadata(
-            str(_split_for_baseline(catalog, baseline)), "cifar100"
-        )
+        class_names = catalog.baseline_class_names()
         return ModelRegistry(
             baseline_checkpoint_path=str(baseline),
             baseline_name="Fine-tuned baseline",
@@ -96,10 +94,17 @@ def main() -> None:
     if runner_mode == "modal":
         from interface.jobs import ModalJobRunner
 
+        if baseline_identity["baseline_id"] == "legacy_override":
+            raise SystemExit(
+                "Modal execution requires a configured baseline manifest; "
+                "a legacy --baseline-checkpoint override is local-only."
+            )
+
         runner = ModalJobRunner(
             endpoint_url=modal_url,
             secret=modal_secret,
             output_root=output_root,
+            **baseline_identity,
         )
         print(f"[interface] dispatching new jobs to Modal worker: {modal_url}")
     else:
@@ -131,14 +136,3 @@ def _usage_tracker(output_root: Path):
         output_root / "interface_usage.json",
         monthly_budget=int(os.environ.get("UNML_MAX_REMOTE_JOBS_PER_MONTH", "300")),
     )
-
-
-def _split_for_baseline(catalog: ArtifactCatalog, baseline: Path) -> Path:
-    request_dir = baseline.parent.parent.parent
-    split_path = request_dir / "splits" / f"{request_dir.name}_split.json"
-    if not split_path.is_file():
-        raise SystemExit(
-            f"Baseline split metadata not found at {split_path}; the interface "
-            "needs it for the class vocabulary."
-        )
-    return split_path

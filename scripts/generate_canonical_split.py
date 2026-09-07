@@ -32,7 +32,6 @@ def parse_args() -> argparse.Namespace:
             REPO_ROOT
             / "outputs"
             / "cifar100"
-            / "canonical"
             / "development"
             / "splits"
             / "cifar100_canonical_development_v1.json"

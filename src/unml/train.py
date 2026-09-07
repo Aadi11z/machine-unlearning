@@ -81,7 +81,7 @@ class FineTuneConfig:
     local_files_only: bool = False
     max_eval_batches: int | None = None
     random_crop: bool = False
-    evaluate_test: bool = True
+    evaluate_test: bool = False
     canonical_final_fit: bool = False
     smoke_mode: bool = False
     training_mode: str = "finetune"
@@ -324,8 +324,12 @@ def _evaluate_all(
     device: torch.device,
     max_batches: int | None = None,
     non_blocking: bool = False,
+    evaluate_validation: bool = True,
     evaluate_test: bool = True,
+    test_all_only: bool = False,
 ) -> Dict[str, float]:
+    if not evaluate_validation and not evaluate_test:
+        return {}
     model.eval()
     class_text_features = build_class_text_features(
         model, class_text_inputs, device
@@ -337,19 +341,26 @@ def _evaluate_all(
         "max_batches": max_batches,
         "non_blocking": non_blocking,
     }
-    retain_val = evaluate_classification(
-        model, loaders["retain_val"], **evaluation_args
-    )
-    metrics: Dict[str, float] = {
-        "retain_val_acc": retain_val["accuracy"],
-        "retain_val_loss": retain_val["loss"],
-        "retain_val_macro_accuracy": retain_val["macro_accuracy"],
-    }
+    metrics: Dict[str, float] = {}
+    if evaluate_validation:
+        retain_val = evaluate_classification(
+            model, loaders["retain_val"], **evaluation_args
+        )
+        metrics.update(
+            {
+                "retain_val_acc": retain_val["accuracy"],
+                "retain_val_loss": retain_val["loss"],
+                "retain_val_macro_accuracy": retain_val["macro_accuracy"],
+            }
+        )
     if not evaluate_test:
         return metrics
     test_all = evaluate_classification(
         model, loaders["test_all"], **evaluation_args
     )
+    metrics["test_all_acc"] = test_all["accuracy"]
+    if test_all_only:
+        return metrics
     test_retain = evaluate_classification(
         model, loaders["test_retain"], **evaluation_args
     )
@@ -358,7 +369,6 @@ def _evaluate_all(
     )
     metrics.update(
         {
-            "test_all_acc": test_all["accuracy"],
             "test_retain_acc": test_retain["accuracy"],
             "forget_train_acc": forget_train["accuracy"],
         }
@@ -369,17 +379,34 @@ def _evaluate_all(
 def _should_evaluate_test(
     cfg: FineTuneConfig, *, epoch: int, epochs_to_run: int
 ) -> bool:
-    if not cfg.evaluate_test:
+    # Oracle test comparisons belong to the separate matched evaluation stage,
+    # never to optimization or checkpoint selection (including legacy callers).
+    if cfg.training_mode == "retrain_oracle" or not cfg.evaluate_test:
         return False
     return not cfg.canonical_final_fit or epoch + 1 == epochs_to_run
 
 
-def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
+def run_finetuning(cfg: FineTuneConfig) -> Dict[str, Any]:
+    if cfg.training_mode == "retrain_oracle":
+        # Record the effective policy in checkpoint/metrics provenance without
+        # mutating the caller's config.
+        cfg = replace(cfg, evaluate_test=False)
     if cfg.gradient_accumulation_steps < 1:
         raise ValueError("gradient_accumulation_steps must be at least 1")
     if not 0.0 <= cfg.warmup_fraction < 1.0:
         raise ValueError("warmup_fraction must be in [0, 1)")
     _validate_training_mode(cfg)
+    if cfg.canonical_final_fit:
+        if cfg.training_mode != "finetune" or cfg.train_loader_key != "finetune_train":
+            raise ValueError("Canonical final fit must use finetune_train mode")
+        if not cfg.evaluate_test:
+            raise ValueError("Canonical final fit must evaluate the official test set")
+        if cfg.max_train_steps != -1:
+            raise ValueError("Canonical final fit requires complete fixed epochs")
+        if cfg.max_eval_batches is not None:
+            raise ValueError("Canonical final fit requires the complete official test set")
+        if cfg.smoke_mode:
+            raise ValueError("Canonical final fit cannot run in smoke mode")
     run_started = time.perf_counter()
     set_seed(cfg.seed)
     device = get_device(cfg.device)
@@ -601,6 +628,7 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
         if cfg.training_mode == "retrain_oracle"
         else "finetuned_best.pt"
     )
+    final_path = ckpt_dir / "finetuned_final.pt"
     global_step = resumed_global_step
     processed_examples = 0
     gradient_parameter_count = 0
@@ -609,6 +637,7 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
     evaluation_seconds = 0.0
     show_progress = os.environ.get("UNML_TQDM", "0") == "1"
     final_metrics: Dict[str, float] | None = None
+    completed_epoch = start_epoch
 
     for epoch in range(start_epoch, epochs_to_run):
         model.set_train_mode()
@@ -684,8 +713,12 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
             ):
                 break
         optimization_seconds += time.perf_counter() - optimization_started
+        completed_epoch = epoch + 1
 
         evaluation_started = time.perf_counter()
+        evaluate_test = _should_evaluate_test(
+            cfg, epoch=epoch, epochs_to_run=epochs_to_run
+        )
         eval_metrics = _evaluate_all(
             model,
             loaders,
@@ -693,12 +726,13 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
             device,
             max_batches=cfg.max_eval_batches,
             non_blocking=cfg.non_blocking,
-            evaluate_test=_should_evaluate_test(
-                cfg, epoch=epoch, epochs_to_run=epochs_to_run
-            ),
+            evaluate_validation=not cfg.canonical_final_fit,
+            evaluate_test=evaluate_test,
+            test_all_only=cfg.canonical_final_fit,
         )
         evaluation_seconds += time.perf_counter() - evaluation_started
-        final_metrics = eval_metrics
+        if eval_metrics:
+            final_metrics = eval_metrics
         epoch_loss = sum(epoch_losses) / max(1, len(epoch_losses))
         full_metrics = {"epoch": float(epoch + 1), "train_loss": epoch_loss, **eval_metrics}
         print(
@@ -706,9 +740,12 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
             flush=True,
         )
 
-        log_finetune_epoch(cfg.__dict__, epoch + 1, epoch_loss, eval_metrics)
+        if not cfg.canonical_final_fit:
+            log_finetune_epoch(
+                cfg.__dict__, epoch + 1, epoch_loss, eval_metrics
+            )
 
-        if cfg.canonical_final_fit or eval_metrics["retain_val_acc"] > best_metric:
+        if not cfg.canonical_final_fit and eval_metrics["retain_val_acc"] > best_metric:
             best_metric = eval_metrics["retain_val_acc"]
             save_checkpoint(
                 str(best_path),
@@ -779,6 +816,28 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
         if global_step >= target_steps:
             break
 
+    if cfg.canonical_final_fit:
+        if final_metrics is None or "test_all_acc" not in final_metrics:
+            raise RuntimeError("Canonical final fit completed without official test evaluation")
+        save_checkpoint(
+            str(final_path),
+            model,
+            extra={
+                "stage": "canonical_final_fit",
+                "checkpoint_role": "final",
+                "epoch": completed_epoch,
+                "global_step": global_step,
+                "dataset": dataset_spec.name,
+                "class_names": class_names,
+                "architecture": model.architecture_summary(),
+                "provenance": provenance,
+                "training_config": resolved_config,
+                "prompt_contract": prompt_contract_metadata,
+                "smoke_mode": False,
+                "metrics": final_metrics,
+            },
+        )
+
     training_seconds = time.perf_counter() - training_started
     peak_memory_mb = (
         torch.cuda.max_memory_allocated(device) / (1024**2)
@@ -824,7 +883,10 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
         raise RuntimeError("Fine-tuning completed without an evaluation snapshot")
     if cfg.smoke_mode and gradient_parameter_count == 0:
         raise RuntimeError("Smoke test found no non-zero trainable gradients")
-    checkpoint_payload = torch.load(best_path, map_location="cpu", weights_only=False)
+    trained_checkpoint = final_path if cfg.canonical_final_fit else best_path
+    checkpoint_payload = torch.load(
+        trained_checkpoint, map_location="cpu", weights_only=False
+    )
     checkpoint_payload_verified = {
         "model_config",
         "adapter_state_dict",
@@ -832,7 +894,9 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
         "extra",
     }.issubset(checkpoint_payload)
     if not checkpoint_payload_verified:
-        raise RuntimeError(f"Checkpoint payload verification failed: {best_path}")
+        raise RuntimeError(
+            f"Checkpoint payload verification failed: {trained_checkpoint}"
+        )
     metrics_path = metrics_dir / (
         "retrain_metrics.json"
         if cfg.training_mode == "retrain_oracle"
@@ -840,17 +904,19 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
     )
     benchmark["total_seconds"] = time.perf_counter() - run_started
     update_checkpoint_extra(
-        str(best_path),
+        str(trained_checkpoint),
         {
             "benchmark": benchmark,
             "provenance": provenance,
             "training_config": resolved_config,
         },
     )
-    benchmark["checkpoint_size_bytes"] = best_path.stat().st_size
+    benchmark["checkpoint_size_bytes"] = trained_checkpoint.stat().st_size
     save_json(
         {
-            "best_retain_val_acc": best_metric,
+            "best_retain_val_acc": (
+                None if cfg.canonical_final_fit else best_metric
+            ),
             "final_metrics": final_metrics,
             "global_steps": global_step,
             "dataset": dataset_spec.name,
@@ -878,11 +944,19 @@ def run_finetuning(cfg: FineTuneConfig) -> Dict[str, str | float]:
         metrics_path,
     )
 
-    log_finetune_summary(cfg.__dict__, best_metric, epochs_to_run)
+    if not cfg.canonical_final_fit:
+        log_finetune_summary(cfg.__dict__, best_metric, epochs_to_run)
 
-    return {
+    result: Dict[str, Any] = {
         "base_checkpoint": str(initial_output_path),
-        "best_checkpoint": str(best_path),
+        # Keep the compatibility key for development/pilot callers. In a
+        # final fit it resolves to the fixed-duration final checkpoint.
+        "best_checkpoint": str(trained_checkpoint),
         "metrics_path": str(metrics_path),
-        "best_retain_val_acc": best_metric,
+        "best_retain_val_acc": (
+            None if cfg.canonical_final_fit else best_metric
+        ),
     }
+    if cfg.canonical_final_fit:
+        result["final_checkpoint"] = str(final_path)
+    return result

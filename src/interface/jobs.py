@@ -41,6 +41,8 @@ class JobRecord:
     candidate_id: str | None = None
     source: str | None = None
     wall_time_s: float | None = None
+    baseline_id: str | None = None
+    baseline_sha256: str | None = None
     created_at: float = field(default_factory=time.time)
 
     def public_dict(self) -> dict:
@@ -59,6 +61,8 @@ class JobRecord:
             "candidate_id": self.candidate_id,
             "source": self.source,
             "wall_time_s": self.wall_time_s,
+            "baseline_id": self.baseline_id,
+            "baseline_sha256": self.baseline_sha256,
         }
 
 
@@ -130,6 +134,9 @@ class SubprocessJobRunner:
         checkpoint = payload.get("result", {}).get("checkpoint")
         if not checkpoint:
             raise RuntimeError(f"Job result at {result_path} has no checkpoint")
+        payload["baseline_id"] = job.baseline_id
+        payload["baseline_sha256"] = job.baseline_sha256
+        result_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         job.checkpoint_path = str(checkpoint)
         job.candidate_id = f"{job.request_name}_{job.method}_{job.steps}"
         job.comparison_model = job.candidate_id
@@ -146,6 +153,8 @@ class ModalJobRunner:
         endpoint_url: str,
         secret: str,
         output_root: Path,
+        baseline_id: str,
+        baseline_sha256: str,
         timeout_s: int = 4000,
         request_timeout_s: int = 30,
         poll_interval_s: float = 2.0,
@@ -153,6 +162,8 @@ class ModalJobRunner:
         self.endpoint_url = endpoint_url
         self.secret = secret
         self.output_root = output_root
+        self.baseline_id = baseline_id
+        self.baseline_sha256 = baseline_sha256
         self.timeout_s = timeout_s
         self.request_timeout_s = request_timeout_s
         self.poll_interval_s = poll_interval_s
@@ -169,6 +180,8 @@ class ModalJobRunner:
                 "class_id": job.class_id,
                 "method": job.method,
                 "steps": job.steps,
+                "baseline_id": self.baseline_id,
+                "baseline_sha256": self.baseline_sha256,
             }
         ).encode("utf-8")
         started = time.time()
@@ -209,6 +222,8 @@ class ModalJobRunner:
             checkpoint_bytes=decode_checkpoint(payload["checkpoint_b64"]),
             metrics=dict(payload.get("metrics", {})),
             wall_time_s=float(payload.get("wall_time_s", 0.0)),
+            baseline_id=str(payload["baseline_id"]),
+            baseline_sha256=str(payload["baseline_sha256"]),
         )
         job.checkpoint_path = str(checkpoint_path)
         job.candidate_id = f"{job.request_name}_{job.method}_{job.steps}"
@@ -251,6 +266,8 @@ def _validate_worker_identity(payload: dict, job: JobRecord) -> None:
         "sibling_classes": job.sibling_classes,
         "method": job.method,
         "steps": job.steps,
+        "baseline_id": job.baseline_id,
+        "baseline_sha256": job.baseline_sha256,
     }
     try:
         actual = {
@@ -261,6 +278,8 @@ def _validate_worker_identity(payload: dict, job: JobRecord) -> None:
             "sibling_classes": [int(value) for value in payload["sibling_classes"]],
             "method": str(payload["method"]),
             "steps": int(payload["steps"]),
+            "baseline_id": str(payload["baseline_id"]),
+            "baseline_sha256": str(payload["baseline_sha256"]),
         }
     except (KeyError, TypeError, ValueError) as error:
         raise RuntimeError("Worker response has invalid identity fields") from error
@@ -332,6 +351,7 @@ class JobManager:
             method=method,
             steps=steps,
             status=JobStatus.QUEUED,
+            **self.catalog.baseline_identity(),
         )
         precomputed = self.catalog.precomputed_candidate(
             class_id=class_id, method=method, steps=steps

@@ -50,12 +50,26 @@ def client_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tiny_clip_factor
     )
     baseline_path = tmp_path / "finetuned_best.pt"
     save_checkpoint(str(baseline_path), model)
-    candidate_dir = tmp_path / "rose_selective" / "unlearn_ga_kl_200" / "checkpoints"
+    candidate_dir = (
+        tmp_path
+        / "archive"
+        / "legacy"
+        / "rose_selective"
+        / "unlearn_ga_kl_200"
+        / "checkpoints"
+    )
     candidate_dir.mkdir(parents=True)
     candidate_path = candidate_dir / "unlearn_ga_kl.pt"
     save_checkpoint(str(candidate_path), model)
 
-    comparison_csv = tmp_path / "rose_selective" / "eval_compare_x" / "comparison.csv"
+    comparison_csv = (
+        tmp_path
+        / "archive"
+        / "legacy"
+        / "rose_selective"
+        / "eval_compare_x"
+        / "comparison.csv"
+    )
     comparison_csv.parent.mkdir(parents=True)
     comparison_csv.write_text(
         "model,target_test_acc,sibling_test_acc,unrelated_test_acc,utility_test_all\n"
@@ -123,6 +137,36 @@ def test_index_renders_groups_and_strip(client_env) -> None:
     assert "Forget it" in body
 
 
+def test_index_keeps_reference_models_separate_from_unlearning(
+    client_env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        client_env.catalog,
+        "reference_artifacts",
+        lambda: (
+            SimpleNamespace(
+                oracle_id="cifar100_retraining_oracle_v1",
+                request_name="flowers_superclass",
+                forget_class_names=("orchid", "poppy", "rose", "sunflower", "tulip"),
+                metric_rows=(
+                    {
+                        "label": "Official test (100 classes)",
+                        "canonical": "87.81%",
+                        "oracle": "84.93%",
+                        "delta": "-2.88 pp",
+                    },
+                ),
+            ),
+        ),
+    )
+    response = client_env.client.get("/")
+    assert response.status_code == 200
+    assert "Canonical reference models" in response.text
+    assert "cifar100_retraining_oracle_v1" in response.text
+    assert "separate from the unlearning" in response.text
+    assert "87.81%" in response.text
+
+
 def test_precomputed_job_completes_and_probe_round_trips(client_env) -> None:
     client = client_env.client
     submit = client.post(
@@ -175,6 +219,7 @@ def test_persisted_job_can_be_probed_after_process_restart(client_env) -> None:
                 "sibling_classes": [54, 62, 82, 92],
                 "method": "ga_kl",
                 "steps": 200,
+                **catalog.baseline_identity(),
                 "result": {"metrics": {"forget_acc": 0.0}},
             }
         ),

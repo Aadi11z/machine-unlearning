@@ -20,6 +20,12 @@ for path in (REPO_ROOT, REPO_ROOT / "src"):
         sys.path.insert(0, str(path))
 
 
+@pytest.fixture(autouse=True)
+def _isolate_configured_baseline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep artifact tests independent of a developer's mounted baseline."""
+    monkeypatch.delenv("UNML_BASELINE_MANIFEST", raising=False)
+
+
 @pytest.fixture
 def tiny_clip_factory():
     """Build fresh two-layer CLIP test doubles for interface tests."""

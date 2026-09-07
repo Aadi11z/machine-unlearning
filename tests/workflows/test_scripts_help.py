@@ -31,7 +31,7 @@ SCRIPTS = [
 
 @pytest.mark.parametrize("script_path", SCRIPTS)
 def test_script_help_runs(script_path: str) -> None:
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve().parents[2]
     cmd = [sys.executable, str(repo_root / script_path), "--help"]
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
 
@@ -42,7 +42,7 @@ def test_script_help_runs(script_path: str) -> None:
 
 
 def test_pipeline_show_config_does_not_start_pipeline() -> None:
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve().parents[2]
     cmd = [
         sys.executable,
         str(repo_root / "scripts/run_pipeline.py"),
@@ -53,13 +53,13 @@ def test_pipeline_show_config_does_not_start_pipeline() -> None:
     )
 
     assert proc.returncode == 0
-    assert "dataset=cifar10" in proc.stdout
-    assert "output_root=outputs/cifar10" in proc.stdout
+    assert "dataset=cifar100" in proc.stdout
+    assert "output_root=outputs/cifar100/development/flowers_superclass" in proc.stdout
     assert "[cmd]" not in proc.stdout
 
 
 def test_pipeline_cifar100_selects_vit_b16_vision_lora() -> None:
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve().parents[2]
     cmd = [
         sys.executable,
         str(repo_root / "scripts/run_pipeline.py"),
@@ -76,13 +76,13 @@ def test_pipeline_cifar100_selects_vit_b16_vision_lora() -> None:
     assert "adapter_type=vision_lora" in proc.stdout
     assert "retraining.enabled=True" in proc.stdout
     assert (
-        "retraining_dir=outputs/cifar100/flowers_superclass/retrain_oracle"
+        "retraining_dir=outputs/cifar100/development/flowers_superclass/retrain_oracle"
         in proc.stdout
     )
 
 
 def test_runtime_benchmark_show_commands_is_non_executing() -> None:
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve().parents[2]
     cmd = [
         sys.executable,
         str(repo_root / "helpers/benchmark_runtime.py"),
@@ -109,7 +109,7 @@ def test_runtime_benchmark_show_commands_is_non_executing() -> None:
 
 
 def test_study_show_commands_is_seed_and_request_isolated() -> None:
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve().parents[2]
     cmd = [
         sys.executable,
         str(repo_root / "scripts/run_study.py"),

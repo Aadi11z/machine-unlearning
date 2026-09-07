@@ -24,16 +24,15 @@ Implemented:
 
 Not yet complete:
 
-- the target-neutral canonical CIFAR-100 baseline;
-- the 18-template prompt contract and locked LoRA configuration;
-- interruption-safe baseline training and immutable manifest promotion;
+- the Phase 1 validation-only pilot and formally locked LoRA configuration;
+- complete baseline provenance, exact-resume acceptance, and portable release
+  artifacts required by the PRD;
 - canonical rose/tulip demonstrations and full comparative evidence;
-- clipboard image paste; and
 - a verified public deployment using the promoted baseline.
 
-The active CIFAR-100 configuration is request-specific and must not be used as
-the permanent baseline. Follow [`docs/PLAN.md`](docs/PLAN.md) before starting
-baseline training.
+The canonical split, 18-template prompt contract, A100-trained baseline, and
+flowers retraining oracle now exist. They support continued development, but
+the artifact is not yet the fully accepted research release in `docs/PLAN.md`.
 
 ## Research claim boundary
 
@@ -61,9 +60,9 @@ Do not maintain a second pip/`venv/` environment alongside the uv-managed
 uv run --locked python scripts/run_pipeline.py --show-config
 ```
 
-At present this resolves to the legacy/request-specific CIFAR-100
-`flowers_superclass` workflow. It is suitable for integration checks and
-historical experiments, not for creating `cifar100_canonical_v1`.
+At present this resolves to a CIFAR-100 `flowers_superclass` development
+workflow under `outputs/cifar100/development/`. It is suitable for integration
+checks and development runs, not for replacing the verified baseline package.
 
 Prepare data and model assets:
 
@@ -85,7 +84,7 @@ uv run --locked python scripts/run_pipeline.py
 uv run --env-file .env unml-interface \
   --offline \
   --device cpu \
-  --baseline-checkpoint outputs/cifar100/legacy/rose_selective/baseline_2000/checkpoints/finetuned_best.pt
+  --output-root outputs
 ```
 
 Open <http://127.0.0.1:8000>.
@@ -94,14 +93,15 @@ Open <http://127.0.0.1:8000>.
 - Without them, non-hosted mode can run local subprocess jobs.
 - Public deployments must use `--hosted`, which rejects missing remote
   credentials rather than falling back to CPU unlearning.
-- The current probe accepts uploaded JPEG, PNG, and WebP images. Clipboard
-  paste is planned but not implemented.
+- The probe accepts uploaded or pasted JPEG, PNG, and WebP images through the
+  same bounded backend validation path.
 
-For the current Modal path, the explicit local baseline must exactly match the
-checkpoint uploaded to the worker. Do not rely on catalog auto-selection: the
-canonical id/hash binding that makes this automatic is still planned work.
-The ignored checkpoint is not included in a clean clone; obtain or reproduce
-the trusted legacy artifact before using this command.
+The interface loads the manifest at `UNML_BASELINE_MANIFEST` (default:
+`outputs/cifar100/baseline/manifest.json`), verifies its artifacts once at
+startup, and reads the class vocabulary from that manifest. A retraining oracle appears in a
+separate reference table only after both checkpoints have been evaluated on
+the same target-specific test split. `--baseline-checkpoint` remains a legacy
+compatibility override and does not establish canonical provenance.
 
 Uploaded images are qualitative and may be outside the CIFAR-100 distribution.
 “Relative confidence” is normalized across the fixed candidate labels; it is
@@ -137,18 +137,21 @@ Core modules:
 
 ## Artifact boundaries
 
-Current request-specific outputs live under paths such as:
+Historical request-specific outputs are preserved under paths such as:
 
 ```text
-outputs/cifar100/legacy/flowers_superclass/
-outputs/cifar100/legacy/rose_selective/
-outputs/cifar100/legacy/jobs/
+outputs/cifar100/archive/legacy/flowers_superclass/
+outputs/cifar100/archive/legacy/rose_selective/
 ```
 
-The planned immutable baseline will live under
-`outputs/cifar100/canonical/`, with a versioned manifest and explicit id/hash.
-Development runs, internal recovery checkpoints, expiring jobs, promoted
-demonstrations, and legacy artifacts must remain distinguishable.
+The immutable baseline lives under `outputs/cifar100/baseline/` as one package
+containing `manifest.json`, its checkpoint, and metrics. Set
+`UNML_BASELINE_MANIFEST` to the mounted package manifest in each deployment;
+the Modal worker must receive its own path because it has a separate filesystem.
+Development runs live below `outputs/cifar100/development/<request>/`,
+identity-bound interface jobs below `outputs/cifar100/jobs/`, and historical
+artifacts below `outputs/cifar100/archive/legacy/`. The latter are explicitly
+precomputed demonstrations, not fresh unlearning results.
 
 ## Documentation
 

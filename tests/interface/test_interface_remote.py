@@ -26,6 +26,15 @@ from interface.remote import (
 )
 
 
+def _catalog_with_legacy_baseline(output_root: Path, tmp_path: Path) -> ArtifactCatalog:
+    baseline = tmp_path / "legacy-baseline.pt"
+    baseline.write_bytes(b"legacy-baseline")
+    return ArtifactCatalog(
+        output_root=output_root,
+        baseline_checkpoint_path=baseline,
+    )
+
+
 def test_signature_round_trip() -> None:
     body = b'{"class_id": 70}'
     signature = sign_payload("s3cret", body)
@@ -68,6 +77,8 @@ def test_subprocess_runner_uses_the_configured_output_root(
         method="ga_kl",
         steps=200,
         status=JobStatus.RUNNING,
+        baseline_id="legacy_override",
+        baseline_sha256="baseline-sha256",
     )
 
     runner(job)
@@ -87,6 +98,8 @@ def test_parse_job_response_validates_fields() -> None:
         "sibling_classes": [54, 62, 82, 92],
         "method": "ga_kl",
         "steps": 200,
+        "baseline_id": "cifar100_canonical_v1",
+        "baseline_sha256": "baseline-sha256",
     }
     parsed = parse_job_response(json.dumps(good).encode())
     assert decode_checkpoint(parsed["checkpoint_b64"]) == b"ckpt"
@@ -107,6 +120,8 @@ def test_modal_runner_allows_long_running_endpoint(tmp_path: Path) -> None:
         endpoint_url="https://worker.invalid",
         secret="test-secret",
         output_root=tmp_path,
+        baseline_id="cifar100_canonical_v1",
+        baseline_sha256="baseline-sha256",
     )
 
     assert runner.timeout_s == 4000
@@ -130,12 +145,40 @@ def artifact_env(
             lora_rank=4,
             lora_alpha=4.0,
             lora_layers="all",
-            lora_targets=("q_proj", "v_proj"),
+            lora_targets=["q_proj", "v_proj"],
             train_logit_scale=False,
         ),
     )
-    baseline_dir = tmp_path / "outputs" / "cifar100" / "rose_selective" / "baseline_2000"
-    save_checkpoint(str(baseline_dir / "checkpoints" / "finetuned_best.pt"), model)
+    from unml.manifest import build_baseline_manifest, write_baseline_manifest
+    from unml.prompts import resolve_prompt_contract
+
+    baseline_dir = (
+        tmp_path
+        / "outputs"
+        / "cifar100"
+        / "baseline"
+    )
+    baseline_checkpoint = baseline_dir / "checkpoints" / "finetuned_best.pt"
+    prompt = resolve_prompt_contract("cifar100")
+    prompt_contract = {
+        "version": prompt.version,
+        "digest": prompt.digest,
+        "template_count": len(prompt.templates),
+    }
+    save_checkpoint(
+        str(baseline_checkpoint), model, extra={"prompt_contract": prompt_contract}
+    )
+    manifest = build_baseline_manifest(
+        baseline_id="baseline-v1",
+        dataset="cifar100",
+        split={"split_id": "canonical", "digest": "split-digest"},
+        model_config=dict(model.cfg.__dict__),
+        prompt_contract=prompt_contract,
+        checkpoints={"checkpoint": baseline_checkpoint},
+        metrics={"class_names": [f"class-{index}" for index in range(100)]},
+        artifact_root=baseline_dir,
+    )
+    write_baseline_manifest(baseline_dir / "manifest.json", manifest)
 
     from unml.model import export_checkpoint_safetensors
 
@@ -154,6 +197,8 @@ def artifact_env(
     return SimpleNamespace(
         output_root=tmp_path / "outputs",
         checkpoint_bytes=checkpoint_bytes,
+        baseline_id=manifest["baseline_id"],
+        baseline_sha256=manifest["artifacts"]["checkpoint"]["sha256"],
     )
 
 
@@ -171,6 +216,8 @@ def test_write_job_artifacts_lands_in_catalog_layout(artifact_env) -> None:
         checkpoint_bytes=env.checkpoint_bytes,
         metrics={"forget_acc": 0.01},
         wall_time_s=12.5,
+        baseline_id=env.baseline_id,
+        baseline_sha256=env.baseline_sha256,
     )
     assert path.is_file()
     catalog = ArtifactCatalog(output_root=env.output_root)
@@ -192,6 +239,8 @@ def test_write_job_artifacts_lands_in_catalog_layout(artifact_env) -> None:
             checkpoint_bytes=b"garbage-not-a-checkpoint",
             metrics={},
             wall_time_s=1.0,
+            baseline_id=env.baseline_id,
+            baseline_sha256=env.baseline_sha256,
         )
 
 
@@ -219,6 +268,8 @@ def test_write_job_artifacts_validates_without_constructing_clip(
         checkpoint_bytes=env.checkpoint_bytes,
         metrics={},
         wall_time_s=1.0,
+        baseline_id=env.baseline_id,
+        baseline_sha256=env.baseline_sha256,
     )
 
     assert path.is_file()
@@ -253,6 +304,8 @@ def test_write_job_artifacts_rejects_invalid_adapter_before_persisting(artifact_
             checkpoint_bytes=checkpoint_bytes,
             metrics={},
             wall_time_s=1.0,
+            baseline_id=env.baseline_id,
+            baseline_sha256=env.baseline_sha256,
         )
     assert not (
         env.output_root
@@ -260,6 +313,27 @@ def test_write_job_artifacts_rejects_invalid_adapter_before_persisting(artifact_
         / "jobs"
         / "rose_selective_h_tgsd_151"
     ).exists()
+
+
+def test_write_job_artifacts_rejects_wrong_baseline_before_persisting(artifact_env) -> None:
+    env = artifact_env
+    with pytest.raises(ValueError, match="baseline identity"):
+        write_job_artifacts(
+            output_root=env.output_root,
+            class_id=70,
+            class_name="rose",
+            request_name="rose_selective",
+            superclass="flowers",
+            sibling_classes=[54, 62, 82, 92],
+            method="ga_kl",
+            steps=121,
+            checkpoint_bytes=env.checkpoint_bytes,
+            metrics={},
+            wall_time_s=1.0,
+            baseline_id=env.baseline_id,
+            baseline_sha256="0" * 64,
+        )
+    assert not (env.output_root / "cifar100" / "jobs").exists()
 
 
 class _StubResponse:
@@ -308,6 +382,8 @@ def test_modal_runner_round_trip_against_stub(
             "steps": 120,
             "wall_time_s": 42.0,
             "metrics": {"forget_acc": 0.0},
+            "baseline_id": env.baseline_id,
+            "baseline_sha256": env.baseline_sha256,
         })
     ]
     seen_bodies = []
@@ -316,6 +392,8 @@ def test_modal_runner_round_trip_against_stub(
         endpoint_url="https://worker.invalid",
         secret=secret,
         output_root=env.output_root,
+        baseline_id=env.baseline_id,
+        baseline_sha256=env.baseline_sha256,
     )
     job = JobRecord(
         job_id="t1",
@@ -327,6 +405,8 @@ def test_modal_runner_round_trip_against_stub(
         method="ga_kl",
         steps=120,
         status=JobStatus.RUNNING,
+        baseline_id=env.baseline_id,
+        baseline_sha256=env.baseline_sha256,
     )
     runner(job)
 
@@ -334,7 +414,13 @@ def test_modal_runner_round_trip_against_stub(
     assert job.source == "modal"
     assert job.candidate_id == "rose_selective_ga_kl_120"
     assert Path(job.checkpoint_path).is_file()
-    assert seen_bodies == [{"class_id": 70, "method": "ga_kl", "steps": 120}]
+    assert seen_bodies == [{
+        "class_id": 70,
+        "method": "ga_kl",
+        "steps": 120,
+        "baseline_id": env.baseline_id,
+        "baseline_sha256": env.baseline_sha256,
+    }]
 
 
 def test_modal_runner_polls_detached_function_call(
@@ -358,6 +444,8 @@ def test_modal_runner_polls_detached_function_call(
                 "steps": 120,
                 "wall_time_s": 42.0,
                 "metrics": {"forget_acc": 0.0},
+                "baseline_id": env.baseline_id,
+                "baseline_sha256": env.baseline_sha256,
             },
         ),
     ]
@@ -368,6 +456,8 @@ def test_modal_runner_polls_detached_function_call(
         endpoint_url="https://worker.invalid",
         secret=secret,
         output_root=env.output_root,
+        baseline_id=env.baseline_id,
+        baseline_sha256=env.baseline_sha256,
         poll_interval_s=0,
     )
     job = JobRecord(
@@ -380,11 +470,19 @@ def test_modal_runner_polls_detached_function_call(
         method="ga_kl",
         steps=120,
         status=JobStatus.RUNNING,
+        baseline_id=env.baseline_id,
+        baseline_sha256=env.baseline_sha256,
     )
     runner(job)
 
     assert seen_bodies == [
-        {"class_id": 70, "method": "ga_kl", "steps": 120},
+        {
+            "class_id": 70,
+            "method": "ga_kl",
+            "steps": 120,
+            "baseline_id": env.baseline_id,
+            "baseline_sha256": env.baseline_sha256,
+        },
         {"call_id": "fc-test"},
         {"call_id": "fc-test"},
     ]
@@ -407,6 +505,8 @@ def test_modal_runner_rejects_mismatched_response_before_persisting(
             "sibling_classes": [47, 55, 72, 95],
             "method": "ga_kl",
             "steps": 120,
+            "baseline_id": env.baseline_id,
+            "baseline_sha256": env.baseline_sha256,
         })
     ]
     seen_bodies = []
@@ -415,6 +515,8 @@ def test_modal_runner_rejects_mismatched_response_before_persisting(
         endpoint_url="https://worker.invalid",
         secret=secret,
         output_root=env.output_root,
+        baseline_id=env.baseline_id,
+        baseline_sha256=env.baseline_sha256,
     )
     job = JobRecord(
         job_id="t1",
@@ -426,6 +528,8 @@ def test_modal_runner_rejects_mismatched_response_before_persisting(
         method="ga_kl",
         steps=120,
         status=JobStatus.RUNNING,
+        baseline_id=env.baseline_id,
+        baseline_sha256=env.baseline_sha256,
     )
     with pytest.raises(RuntimeError, match="class_id"):
         runner(job)
@@ -435,6 +539,7 @@ def test_modal_runner_rejects_mismatched_response_before_persisting(
 
 def test_catalog_translates_fresh_job_metrics_without_inventing_breakdowns(tmp_path) -> None:
     output_root = tmp_path / "outputs"
+    catalog = _catalog_with_legacy_baseline(output_root, tmp_path)
     job_dir = output_root / "cifar100" / "jobs" / "rose_selective_ga_kl_120"
     checkpoint = job_dir / "checkpoints" / "unlearn_ga_kl.safetensors"
     checkpoint.parent.mkdir(parents=True)
@@ -443,6 +548,7 @@ def test_catalog_translates_fresh_job_metrics_without_inventing_breakdowns(tmp_p
         json.dumps(
             {
                 "request_name": "rose_selective",
+                **catalog.baseline_identity(),
                 "result": {
                     "metrics": {
                         "forget_acc": 0.91,
@@ -455,7 +561,6 @@ def test_catalog_translates_fresh_job_metrics_without_inventing_breakdowns(tmp_p
         )
     )
 
-    catalog = ArtifactCatalog(output_root=output_root)
     candidate = catalog.precomputed_candidate(class_id=70, method="ga_kl", steps=120)
     assert candidate is not None
     assert candidate.source == "job"
@@ -477,7 +582,7 @@ def test_catalog_translates_fresh_job_metrics_without_inventing_breakdowns(tmp_p
 
 def test_catalog_discovers_job_metrics_added_after_an_initial_lookup(tmp_path) -> None:
     output_root = tmp_path / "outputs"
-    catalog = ArtifactCatalog(output_root=output_root)
+    catalog = _catalog_with_legacy_baseline(output_root, tmp_path)
     assert catalog.comparison_rows("rose_selective") == []
 
     job_dir = output_root / "cifar100" / "jobs" / "rose_selective_ga_kl_120"
@@ -487,6 +592,7 @@ def test_catalog_discovers_job_metrics_added_after_an_initial_lookup(tmp_path) -
             {
                 "candidate_id": "rose_selective_ga_kl_120",
                 "request_name": "rose_selective",
+                **catalog.baseline_identity(),
                 "result": {"metrics": {"target_test_acc": 0.02}},
             }
         )
@@ -497,14 +603,39 @@ def test_catalog_discovers_job_metrics_added_after_an_initial_lookup(tmp_path) -
     ]
 
 
+def test_catalog_ignores_a_job_from_another_baseline(tmp_path) -> None:
+    output_root = tmp_path / "outputs"
+    catalog = _catalog_with_legacy_baseline(output_root, tmp_path)
+    job_dir = output_root / "cifar100" / "jobs" / "rose_selective_ga_kl_120"
+    checkpoint = job_dir / "checkpoints" / "unlearn_ga_kl.safetensors"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_bytes(b"placeholder")
+    (job_dir / "job_result.json").write_text(
+        json.dumps(
+            {
+                "candidate_id": "rose_selective_ga_kl_120",
+                "request_name": "rose_selective",
+                "baseline_id": "another-baseline",
+                "baseline_sha256": "0" * 64,
+                "result": {"metrics": {"target_test_acc": 0.02}},
+            }
+        )
+    )
+
+    assert catalog.precomputed_candidate(class_id=70, method="ga_kl", steps=120) is None
+    assert catalog.comparison_rows("rose_selective") == []
+
+
 def test_catalog_reads_subprocess_job_result_metrics(tmp_path) -> None:
     output_root = tmp_path / "outputs"
+    catalog = _catalog_with_legacy_baseline(output_root, tmp_path)
     job_dir = output_root / "cifar100" / "jobs" / "rose_selective_ga_kl_120"
     job_dir.mkdir(parents=True)
     (job_dir / "job_result.json").write_text(
         json.dumps(
             {
                 "request_name": "rose_selective",
+                **catalog.baseline_identity(),
                 "result": {
                     "checkpoint": "/ignored/checkpoint.pt",
                     "forget_acc": 0.91,
@@ -516,7 +647,7 @@ def test_catalog_reads_subprocess_job_result_metrics(tmp_path) -> None:
         )
     )
 
-    assert ArtifactCatalog(output_root=output_root).comparison_rows("rose_selective") == [
+    assert catalog.comparison_rows("rose_selective") == [
         {
             "model": "rose_selective_ga_kl_120",
             "target_test_acc": "0.02",

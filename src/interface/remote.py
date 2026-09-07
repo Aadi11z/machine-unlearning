@@ -34,7 +34,8 @@ def decode_checkpoint(encoded: str) -> bytes:
 def parse_job_response(payload: bytes) -> dict:
     parsed = json.loads(payload)
     required = {"checkpoint_b64", "class_id", "class_name", "request_name",
-                "superclass", "sibling_classes", "method", "steps"}
+                "superclass", "sibling_classes", "method", "steps",
+                "baseline_id", "baseline_sha256"}
     missing = sorted(required - set(parsed))
     if missing:
         raise ValueError(f"Worker response missing fields: {missing}")
@@ -56,6 +57,8 @@ def write_job_artifacts(
     checkpoint_bytes: bytes,
     metrics: dict,
     wall_time_s: float,
+    baseline_id: str,
+    baseline_sha256: str,
 ) -> Path:
     """Persist a remote result in the layout ArtifactCatalog already scans.
 
@@ -66,9 +69,12 @@ def write_job_artifacts(
     import torch
     from safetensors.torch import load as st_load
 
-    baseline_payload = torch.load(
-        _baseline_for(output_root), map_location="cpu", weights_only=False
+    baseline_path = _canonical_baseline_for(
+        output_root,
+        baseline_id=baseline_id,
+        baseline_sha256=baseline_sha256,
     )
+    baseline_payload = torch.load(baseline_path, map_location="cpu", weights_only=False)
     reference_cfg = _cfg_from(baseline_payload["model_config"])
 
     from unml.model import (
@@ -114,6 +120,8 @@ def write_job_artifacts(
         "sibling_classes": sibling_classes,
         "method": method,
         "steps": steps,
+        "baseline_id": baseline_id,
+        "baseline_sha256": baseline_sha256,
         "wall_time_s": wall_time_s,
         "result": {"checkpoint": str(checkpoint_path), "metrics": metrics},
     }
@@ -123,13 +131,21 @@ def write_job_artifacts(
     return checkpoint_path
 
 
-def _baseline_for(output_root: Path) -> Path:
-    matches = sorted((output_root / "cifar100").glob("*/baseline_*/checkpoints/finetuned_best.pt"))
-    if not matches:
-        raise FileNotFoundError(
-            "No baseline checkpoint under output root; cannot validate remote delta"
-        )
-    return matches[0]
+def _canonical_baseline_for(
+    output_root: Path, *, baseline_id: str, baseline_sha256: str
+) -> Path:
+    from interface.catalog import ArtifactCatalog
+    catalog = ArtifactCatalog(output_root=output_root)
+    identity = catalog.baseline_identity()
+    if identity != {
+        "baseline_id": baseline_id,
+        "baseline_sha256": baseline_sha256,
+    }:
+        raise ValueError("Remote result baseline identity does not match local canonical baseline")
+    checkpoint = catalog.baseline_checkpoint()
+    if checkpoint is None:  # pragma: no cover - guarded by baseline_identity
+        raise FileNotFoundError("Canonical baseline checkpoint is missing")
+    return checkpoint
 
 
 def _cfg_from(stored_cfg: dict):

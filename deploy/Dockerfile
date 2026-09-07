@@ -18,14 +18,13 @@ COPY scripts ./scripts
 COPY helpers/cache_model.py ./helpers/cache_model.py
 COPY config ./config
 
-# Small trusted legacy rose-request artifacts used by the current demo.
-# Replace these paths together after canonical-baseline promotion.
-COPY outputs/cifar100/rose_selective/baseline_2000/checkpoints/finetuned_best.pt \
-     /app/outputs/cifar100/rose_selective/baseline_2000/checkpoints/finetuned_best.pt
-COPY outputs/cifar100/rose_selective/splits/rose_selective_split.json \
-     /app/outputs/cifar100/rose_selective/splits/rose_selective_split.json
-COPY outputs/cifar100/rose_selective/eval_compare_h_tgsd_ablation_ga_kl_200/comparison.csv \
-     /app/outputs/cifar100/rose_selective/eval_compare_h_tgsd_ablation_ga_kl_200/comparison.csv
+# The verified current baseline and a clearly historical/precomputed rose
+# candidate are intentionally included for the offline demo.
+COPY outputs/cifar100/baseline /app/outputs/cifar100/baseline
+COPY outputs/cifar100/archive/legacy/rose_selective/unlearn_ga_kl_200/checkpoints/unlearn_ga_kl.pt \
+     /app/outputs/cifar100/archive/legacy/rose_selective/unlearn_ga_kl_200/checkpoints/unlearn_ga_kl.pt
+COPY outputs/cifar100/archive/legacy/rose_selective/eval_compare_h_tgsd_ablation_ga_kl_200/comparison.csv \
+     /app/outputs/cifar100/archive/legacy/rose_selective/eval_compare_h_tgsd_ablation_ga_kl_200/comparison.csv
 
 RUN pip install --no-cache-dir \
     "transformers>=4.40.0,<5.0" "tqdm>=4.66.0" "PyYAML>=6.0" \

@@ -11,7 +11,7 @@ except ModuleNotFoundError:
 
 configure_runtime()
 
-from unml.config import (
+from unml.config import (  # noqa: E402
     load_runtime_config,
     resolve_data_dir,
     resolve_dataset_and_split_path,
@@ -20,8 +20,8 @@ from unml.config import (
     resolve_stage_output_dir,
     resolve_value,
 )
-from unml.utils import transformers_offline
-from unml.utils import load_json
+from unml.utils import transformers_offline  # noqa: E402
+from unml.utils import load_json  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -41,7 +41,8 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help=(
             "Retrain from the original adapter initialization using only "
-            "retain_train and the source optimizer schedule"
+            "retain_train and the source optimizer schedule; validation-only "
+            "during training, with test comparison in a separate evaluation step"
         ),
     )
     parser.add_argument("--initial-checkpoint", type=str, default=None)
@@ -361,6 +362,7 @@ def main() -> None:
             else smoke_eval_batches if args.smoke else None
         ),
         smoke_mode=args.smoke,
+        evaluate_test=False,
         training_mode="retrain_oracle" if args.oracle else "finetune",
         train_loader_key="retain_train" if args.oracle else "finetune_train",
         initial_checkpoint=initial_checkpoint,

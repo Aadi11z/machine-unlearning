@@ -15,7 +15,7 @@ from unml.request_factory import (
     validate_selective_request,
 )
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 ROSE_SPLIT_PATH = (
     REPO_ROOT
     / "outputs"

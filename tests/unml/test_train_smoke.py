@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import torch
+import pytest
 
 from unml.train import FineTuneConfig, _evaluate_all, _should_evaluate_test
+from unml.train import run_finetuning
 from unml.evaluate import evaluate_zero_shot
 
 
@@ -91,6 +93,54 @@ def test_canonical_final_fit_evaluates_test_only_on_final_epoch() -> None:
     assert decisions == [False, False, True]
 
 
+def test_canonical_final_fit_evaluates_only_official_test() -> None:
+    loaders = {"test_all": [_batch(0, 0)]}
+    class_text_inputs = {
+        "input_ids": torch.ones((2, 3), dtype=torch.long),
+        "attention_mask": torch.ones((2, 3), dtype=torch.long),
+    }
+
+    metrics = _evaluate_all(
+        EvalModel(),
+        loaders,
+        class_text_inputs,
+        torch.device("cpu"),
+        evaluate_validation=False,
+        evaluate_test=True,
+        test_all_only=True,
+    )
+
+    assert metrics == {"test_all_acc": 1.0}
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"evaluate_test": False}, "official test"),
+        ({"max_train_steps": 10}, "complete fixed epochs"),
+        ({"max_eval_batches": 1}, "complete official test"),
+        ({"smoke_mode": True}, "smoke mode"),
+        ({"training_mode": "retrain_oracle"}, "finetune_train mode"),
+    ],
+)
+def test_canonical_final_fit_rejects_nonfinal_policies(
+    overrides: dict[str, object], message: str, monkeypatch
+) -> None:
+    values = {
+        "data_dir": "data",
+        "split_path": "split.json",
+        "output_dir": "outputs",
+        "canonical_final_fit": True,
+        "evaluate_test": True,
+    }
+    values.update(overrides)
+    cfg = FineTuneConfig(**values)
+    # Isolate the final-fit policy checks from oracle-specific prerequisites.
+    monkeypatch.setattr("unml.train._validate_training_mode", lambda _cfg: None)
+    with pytest.raises(ValueError, match=message):
+        run_finetuning(cfg)
+
+
 def test_standard_training_preserves_per_epoch_test_evaluation() -> None:
     cfg = FineTuneConfig(
         data_dir="data",
@@ -100,6 +150,46 @@ def test_standard_training_preserves_per_epoch_test_evaluation() -> None:
     )
 
     assert _should_evaluate_test(cfg, epoch=0, epochs_to_run=3)
+
+
+def test_development_training_is_validation_only_by_default() -> None:
+    cfg = FineTuneConfig(
+        data_dir="data",
+        split_path="split.json",
+        output_dir="outputs",
+    )
+
+    assert cfg.evaluate_test is False
+    assert not _should_evaluate_test(cfg, epoch=2, epochs_to_run=3)
+
+
+@pytest.mark.parametrize("evaluate_test", [False, True])
+@pytest.mark.parametrize("canonical_final_fit", [False, True])
+def test_oracle_training_never_evaluates_test(
+    evaluate_test: bool, canonical_final_fit: bool
+) -> None:
+    cfg = FineTuneConfig(
+        data_dir="data",
+        split_path="split.json",
+        output_dir="outputs",
+        training_mode="retrain_oracle",
+        evaluate_test=evaluate_test,
+        canonical_final_fit=canonical_final_fit,
+    )
+    # Test/forget loaders are deliberately unavailable: accessing one fails.
+    loaders = {"retain_val": [_batch(0, 0)]}
+    inputs = {
+        "input_ids": torch.ones((2, 3), dtype=torch.long),
+        "attention_mask": torch.ones((2, 3), dtype=torch.long),
+    }
+    for epoch in range(3):
+        metrics = _evaluate_all(
+            EvalModel(), loaders, inputs, torch.device("cpu"),
+            evaluate_test=_should_evaluate_test(cfg, epoch=epoch, epochs_to_run=3),
+        )
+        assert set(metrics) == {
+            "retain_val_acc", "retain_val_loss", "retain_val_macro_accuracy"
+        }
 
 
 def test_zero_shot_evaluation_uses_validation_contract() -> None:

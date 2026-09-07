@@ -360,17 +360,22 @@ def resolve_output_root(
         return Path(cli_output_root)
 
     request_name = resolve_request_name(cli_request, payload, dataset_name)
-    environment_root = os.environ.get("UNML_OUTPUTS")
-    if environment_root:
-        output_root = Path(environment_root) / dataset_name
-        return output_root / request_name if request_name else output_root
-
     raw_root = nested_get(payload, ("outputs", "root"))
     if raw_root is None:
         raw_root = "outputs/{dataset}"
 
     rendered = str(raw_root).format(dataset=dataset_name)
     output_root = Path(rendered)
+    environment_root = os.environ.get("UNML_OUTPUTS")
+    if environment_root:
+        # Relocate the runtime outputs directory while retaining its configured
+        # layout (e.g. cifar100/development) on scratch storage.
+        try:
+            relative_root = output_root.relative_to("outputs")
+        except ValueError:
+            # Preserve the existing override for custom/absolute config roots.
+            relative_root = Path(dataset_name)
+        output_root = Path(environment_root) / relative_root
     return output_root / request_name if request_name else output_root
 
 

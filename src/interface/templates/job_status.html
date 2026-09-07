@@ -4,7 +4,7 @@
 <div class="banner ok-banner" data-candidate-id="{{ job.candidate_id }}" id="job-done">
   <strong>&check; Done — candidate checkpoint ready.</strong>
   <span class="muted">{{ job.method }} · {{ job.steps }} steps ·
-    {% if job.source == "precomputed" %}restored from the completed experiment{% else %}fresh job ({{ "%.1f"|format(job.wall_time_s) }}s){% endif %}
+    {% if job.source == "precomputed" %}historical precomputed artifact (not a fresh job){% else %}fresh job ({{ "%.1f"|format(job.wall_time_s) }}s){% endif %}
   </span>
   <p class="muted">Sibling classes watched in the same group:
     {% for sib in job.sibling_classes %}<code>{{ sib }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.

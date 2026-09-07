@@ -78,6 +78,15 @@ def test_canonical_split_adapts_to_loader_contract_without_a_forget_set(
     assert adapted["test_retain_indices"] == list(range(10_000))
 
 
+def test_canonical_final_fit_uses_all_training_examples(
+    canonical_payload: dict[str, object],
+) -> None:
+    adapted = canonical_training_payload(canonical_payload, final_fit=True)
+
+    assert adapted["finetune_train_indices"] == list(range(50_000))
+    assert len(adapted["finetune_train_indices"]) == 50_000
+
+
 def test_canonical_split_is_reproducible_and_unaffected_by_forget_requests() -> None:
     train_labels = _official_cifar100_labels(per_class=500)
     test_labels = _official_cifar100_labels(per_class=100)

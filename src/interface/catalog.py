@@ -2,9 +2,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
+from typing import Any, Mapping
 
+from unml.baseline import BaselineReference, configured_baseline_manifest, resolve_baseline
+from unml.manifest import (
+    sha256_file,
+    validate_baseline_identity,
+    verify_retraining_oracle_canonical_contract,
+    verify_retraining_oracle_manifest,
+)
 from unml.methods import UNLEARNING_METHODS
+from unml.prompts import resolve_prompt_contract
 from unml.request_factory import resolve_selective_request
 
 DATASET_NAME = "cifar100"
@@ -30,6 +40,17 @@ class CandidateArtifact:
     checkpoint_path: Path
     comparison_model: str
     source: str
+
+
+@dataclass(frozen=True)
+class ReferenceArtifact:
+    oracle_id: str
+    request_name: str
+    request_type: str
+    forget_class_names: tuple[str, ...]
+    checkpoint_path: Path
+    manifest_path: Path
+    metric_rows: tuple[dict[str, str], ...]
 
 
 def validate_job_spec(
@@ -72,11 +93,16 @@ class ArtifactCatalog:
         output_root: Path,
         dataset_name: str = DATASET_NAME,
         baseline_checkpoint_path: Path | None = None,
+        baseline_manifest_path: Path | None = None,
     ) -> None:
         self.output_root = Path(output_root)
         self.dataset_name = dataset_name
         self._baseline_override = baseline_checkpoint_path
         self._comparison_cache: dict[str, list[dict[str, str]]] = {}
+        self._baseline_manifest_path = baseline_manifest_path
+        self._baseline_reference: BaselineReference | None = None
+        self._baseline_manifest_cache: dict[str, Any] | None = None
+        self._reference_cache: tuple[ReferenceArtifact, ...] | None = None
 
     def request_for(self, class_id: int):
         return resolve_selective_request(self.dataset_name, class_id)
@@ -84,11 +110,131 @@ class ArtifactCatalog:
     def baseline_checkpoint(self) -> Path | None:
         if self._baseline_override is not None:
             return self._baseline_override
-        dataset_root = self.output_root / self.dataset_name
-        if not dataset_root.is_dir():
+        try:
+            baseline = self.baseline_reference()
+        except FileNotFoundError:
             return None
-        matches = sorted(dataset_root.glob("*/baseline_*/checkpoints/finetuned_best.pt"))
-        return matches[0] if matches else None
+        return baseline.final_checkpoint
+
+    def baseline_reference(self) -> BaselineReference:
+        if self._baseline_reference is None:
+            path = self._baseline_manifest_path or configured_baseline_manifest(
+                self.output_root, dataset=self.dataset_name
+            )
+            self._baseline_reference = resolve_baseline(path, dataset=self.dataset_name)
+        return self._baseline_reference
+
+    def baseline_identity(self) -> dict[str, str]:
+        """Return the exact baseline identity used by jobs and persisted results."""
+        checkpoint = self.baseline_checkpoint()
+        if checkpoint is None:
+            raise FileNotFoundError("No baseline checkpoint is available")
+        if self._baseline_override is not None:
+            return {
+                "baseline_id": "legacy_override",
+                "baseline_sha256": sha256_file(checkpoint),
+            }
+        baseline = self.baseline_reference()
+        return {
+            "baseline_id": baseline.baseline_id,
+            "baseline_sha256": baseline.final_checkpoint_sha256,
+        }
+
+    def canonical_baseline_root(self) -> Path:
+        return self.baseline_reference().package_root
+
+    def baseline_manifest(self) -> dict[str, Any]:
+        if self._baseline_manifest_cache is None:
+            baseline = self.baseline_reference()
+            manifest = dict(baseline.manifest)
+            if manifest.get("dataset") != self.dataset_name:
+                raise ValueError("Baseline dataset does not match interface")
+            contract = resolve_prompt_contract(self.dataset_name)
+            stored_contract = manifest.get("prompt_contract", {})
+            if (
+                stored_contract.get("version") != contract.version
+                or stored_contract.get("digest") != contract.digest
+            ):
+                raise ValueError("Baseline prompt contract is not supported")
+            record = manifest["artifacts"].get("checkpoint")
+            if not isinstance(record, Mapping):
+                raise ValueError("Baseline manifest lacks checkpoint artifact")
+            validate_baseline_identity(
+                manifest,
+                baseline_id=baseline.baseline_id,
+                checkpoint_path=baseline.final_checkpoint,
+            )
+            self._baseline_manifest_cache = manifest
+        return self._baseline_manifest_cache
+
+    def baseline_class_names(self) -> list[str]:
+        if self._baseline_override is not None:
+            from unml.data import get_dataset_spec
+
+            return list(get_dataset_spec(self.dataset_name).class_names)
+        metrics = self.baseline_manifest().get("metrics", {})
+        class_names = metrics.get("class_names") if isinstance(metrics, Mapping) else None
+        if not isinstance(class_names, list) or len(class_names) != NUM_CLASSES:
+            raise ValueError(
+                "Canonical baseline manifest must contain all CIFAR-100 class names"
+            )
+        return [str(name) for name in class_names]
+
+    def reference_artifacts(self) -> tuple[ReferenceArtifact, ...]:
+        if self._reference_cache is not None:
+            return self._reference_cache
+        root = self.output_root / self.dataset_name / "oracle"
+        index_path = root / "promoted.json"
+        if not index_path.is_file():
+            self._reference_cache = ()
+            return self._reference_cache
+        index = _read_json_object(index_path)
+        if index.get("schema") != "unml-retraining-oracle-index-v1" or not isinstance(
+            index.get("references"), Mapping
+        ):
+            raise ValueError(f"Invalid retraining oracle index: {index_path}")
+        manifests = []
+        resolved_root = root.resolve()
+        for relative_path in index["references"].values():
+            manifest_path = (root / str(relative_path)).resolve()
+            if not manifest_path.is_relative_to(resolved_root):
+                raise ValueError("Retraining oracle index path escapes its root")
+            manifests.append(manifest_path)
+        references: list[ReferenceArtifact] = []
+        canonical = self.baseline_manifest()
+        canonical_manifest_path = self.canonical_baseline_root() / "manifest.json"
+        for manifest_path in manifests:
+            manifest = _read_json_object(manifest_path)
+            verify_retraining_oracle_manifest(manifest, root=manifest_path.parent)
+            if manifest.get("dataset") != self.dataset_name:
+                raise ValueError(f"Oracle dataset mismatch: {manifest_path}")
+            verify_retraining_oracle_canonical_contract(
+                manifest,
+                canonical,
+                canonical_manifest_path=canonical_manifest_path,
+            )
+            request = manifest["request"]
+            request_name = str(request["request_name"])
+            if index["references"].get(request_name) != str(
+                manifest_path.relative_to(resolved_root)
+            ):
+                raise ValueError("Promoted oracle request does not match its manifest")
+            checkpoint = manifest_path.parent / manifest["artifacts"]["checkpoint"]["path"]
+            references.append(
+                ReferenceArtifact(
+                    oracle_id=str(manifest["oracle_id"]),
+                    request_name=request_name,
+                    request_type=str(request["request_type"]),
+                    forget_class_names=tuple(
+                        str(name) for name in request["forget_class_names"]
+                    ),
+                    checkpoint_path=checkpoint,
+                    manifest_path=manifest_path,
+                    metric_rows=tuple(_reference_metric_rows(canonical, manifest)),
+                )
+            )
+        self._reference_cache = tuple(references)
+        return self._reference_cache
 
     def precomputed_candidate(
         self, *, class_id: int, method: str, steps: int
@@ -101,19 +247,33 @@ class ArtifactCatalog:
             / f"{request.request_name}_{method}_{steps}"
         )
         job_dir = job_root / "checkpoints"
-        historical_dir = dataset_root / request.request_name
+        # Historical demonstrations predate the canonical artifact layout.  They
+        # remain probeable as explicitly precomputed candidates, but are never
+        # considered a baseline or fresh, identity-bound interface job.
+        historical_dirs = (
+            dataset_root / "archive" / "legacy" / request.request_name,
+        )
         job_checkpoint = _first_existing(
             [job_dir / name for name in _CHECKPOINT_FILENAMES(method)]
         )
-        checkpoint = job_checkpoint or _first_existing(
-            sorted(
-                path
-                for path in historical_dir.glob(
-                    f"unlearn_{method}*_{steps}/checkpoints/*"
+        if job_checkpoint is not None and not self._job_matches_baseline(
+            job_root / "job_result.json"
+        ):
+            job_checkpoint = None
+        checkpoint = job_checkpoint
+        if checkpoint is None:
+            for historical_dir in historical_dirs:
+                checkpoint = _first_existing(
+                    sorted(
+                        path
+                        for path in historical_dir.glob(
+                            f"unlearn_{method}*_{steps}/checkpoints/*"
+                        )
+                        if path.suffix in {".pt", ".safetensors"}
+                    )
                 )
-                if path.suffix in {".pt", ".safetensors"}
-            )
-        )
+                if checkpoint is not None:
+                    break
         if checkpoint is None:
             return None
         candidate_id = f"{request.request_name}_{method}_{steps}"
@@ -129,6 +289,16 @@ class ArtifactCatalog:
             source="job" if is_fresh_job else "precomputed",
         )
 
+    def _job_matches_baseline(self, result_path: Path) -> bool:
+        if not result_path.is_file():
+            return False
+        try:
+            payload = _read_json_object(result_path)
+            expected = self.baseline_identity()
+        except (FileNotFoundError, OSError, TypeError, ValueError):
+            return False
+        return all(payload.get(key) == value for key, value in expected.items())
+
     def persisted_candidate(self, candidate_id: str) -> CandidateArtifact | None:
         """Resolve a completed interface job after the web process restarts."""
         import json
@@ -138,6 +308,8 @@ class ArtifactCatalog:
             return None
 
         for result_path in jobs_root.glob("*/job_result.json"):
+            if not self._job_matches_baseline(result_path):
+                continue
             try:
                 payload = json.loads(result_path.read_text(encoding="utf-8"))
                 stored_candidate_id = str(
@@ -188,7 +360,13 @@ class ArtifactCatalog:
             rows: list[dict[str, str]] = []
             dataset_root = self.output_root / self.dataset_name
             candidates = sorted(
-                (dataset_root / request_name).glob("eval_compare_*/comparison.csv"),
+                [
+                    path
+                    for root in (
+                        dataset_root / "archive" / "legacy" / request_name,
+                    )
+                    for path in root.glob("eval_compare_*/comparison.csv")
+                ],
                 key=lambda path: path.stat().st_mtime,
                 reverse=True,
             )
@@ -220,6 +398,8 @@ class ArtifactCatalog:
 
         rows: list[dict[str, str]] = []
         for result_path in jobs_root.glob(f"{request_name}_*/job_result.json"):
+            if not self._job_matches_baseline(result_path):
+                continue
             try:
                 payload = json.loads(result_path.read_text(encoding="utf-8"))
                 if str(payload["request_name"]) != request_name:
@@ -251,3 +431,54 @@ def _is_metric_number(value: object) -> bool:
     except (TypeError, ValueError):
         return False
     return True
+
+
+def _read_json_object(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"Cannot read artifact manifest {path}: {error}") from error
+    if not isinstance(payload, dict):
+        raise ValueError(f"Artifact manifest must contain an object: {path}")
+    return payload
+
+
+def _reference_metric_rows(
+    _canonical: Mapping[str, Any], oracle: Mapping[str, Any]
+) -> list[dict[str, str]]:
+    evaluations = oracle["comparison"].get("evaluations", {})
+    canonical = evaluations.get("canonical", {})
+    retraining_oracle = evaluations.get("oracle", {})
+    rows = []
+    for key, label in (
+        ("test_all", "Official test (100 classes)"),
+        ("test_retain", "Retain test (non-target classes)"),
+        ("test_forget", "Forget test (target classes)"),
+    ):
+        canonical_value = _metric(canonical.get(key, {}), "accuracy")
+        oracle_value = _metric(retraining_oracle.get(key, {}), "accuracy")
+        rows.append(_metric_row(label, canonical_value, oracle_value))
+    return rows
+
+
+def _metric(metrics: Mapping[str, Any], name: str) -> float:
+    value = metrics.get(name)
+    if not _is_metric_number(value):
+        raise ValueError(f"Recorded reference metrics lack {name!r}")
+    return float(value)
+
+
+def _metric_row(label: str, canonical: float | None, oracle: float | None) -> dict[str, str]:
+    delta = oracle - canonical if canonical is not None and oracle is not None else None
+    return {
+        "label": label,
+        "canonical": _percent(canonical),
+        "oracle": _percent(oracle),
+        "delta": f"{delta * 100:+.2f} pp" if delta is not None else "not recorded",
+    }
+
+
+def _percent(value: float | None) -> str:
+    return f"{value * 100:.2f}%" if value is not None else "not recorded"

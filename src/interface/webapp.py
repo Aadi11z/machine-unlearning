@@ -241,6 +241,7 @@ def create_app(
     async def index(request: starlette_requests.Request):
         groups = _superclass_groups()
         baseline = catalog.baseline_checkpoint()
+        references = catalog.reference_artifacts()
         return templates.TemplateResponse(
             request,
             "index.html",
@@ -251,6 +252,7 @@ def create_app(
                 "num_classes": NUM_CLASSES,
                 "backbone": BACKBONE_NAME,
                 "baseline_ready": baseline is not None,
+                "references": references,
             },
         )
 

@@ -37,6 +37,19 @@ body {
   padding: 22px 24px; margin-bottom: 22px;
 }
 .card h2 { font-size: 18px; margin: 4px 0 8px; }
+.reference-header {
+  display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px;
+  align-items: center; margin-top: 16px;
+}
+.reference-badge {
+  color: var(--ok); background: #ecfdf3; border: 1px solid #bbe7c9;
+  border-radius: 999px; padding: 3px 10px; font-size: 12px; font-weight: 650;
+}
+.reference-table-wrap { overflow-x: auto; }
+.reference-table { min-width: 620px; }
+.reference-table th:not(:first-child), .reference-table td:not(:first-child) {
+  text-align: right;
+}
 .step-num {
   display: inline-block; width: 24px; height: 24px; line-height: 24px;
   text-align: center; background: var(--accent); color: #fff;
